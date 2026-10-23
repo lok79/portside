@@ -14,6 +14,15 @@ public struct DefinitionMatcher: Sendable {
         command.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
+    /// 「同实例」判定（端口 + 规范化命令）——实例匹配（认领/分区）与收编去重
+    /// （ServiceDefinitionCenter.adopt）共用的**单一事实来源**，两处不各自拼规则。
+    public static func isSameInstance(
+        port: Int, commandLine: String, as definition: ServiceDefinition
+    ) -> Bool {
+        port == definition.port
+            && normalizedCommand(commandLine) == normalizedCommand(definition.launchCommand)
+    }
+
     /// 在定义集合中找与运行中实例匹配的定义；无匹配返回 nil。
     public func definition(
         matching service: ListeningService, in definitions: [ServiceDefinition]
@@ -29,8 +38,7 @@ public struct DefinitionMatcher: Sendable {
 
     /// 单对匹配规则：端口一致 + 规范化命令一致；实例命令行缺失一律不匹配。
     private func matches(_ service: ListeningService, _ definition: ServiceDefinition) -> Bool {
-        guard service.port == definition.port,
-              let command = service.commandLine else { return false }
-        return Self.normalizedCommand(command) == Self.normalizedCommand(definition.launchCommand)
+        guard let command = service.commandLine else { return false }
+        return Self.isSameInstance(port: service.port, commandLine: command, as: definition)
     }
 }

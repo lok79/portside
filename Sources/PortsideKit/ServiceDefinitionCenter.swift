@@ -66,8 +66,7 @@ public final class ServiceDefinitionCenter: @unchecked Sendable {
         let normalizedPrefix = ServiceDefinition.normalizedPathPrefix(pathPrefix)
         return lock.withLock {
             if let index = definitions.firstIndex(where: {
-                $0.port == port && DefinitionMatcher.normalizedCommand($0.launchCommand)
-                    == DefinitionMatcher.normalizedCommand(commandLine)
+                DefinitionMatcher.isSameInstance(port: port, commandLine: commandLine, as: $0)
             }) {
                 definitions[index].name = trimmedName
                 definitions[index].pathPrefix = normalizedPrefix

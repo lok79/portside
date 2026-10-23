@@ -98,4 +98,19 @@ final class DefinitionMatcherTests: XCTestCase {
         XCTAssertEqual(DefinitionMatcher.normalizedCommand("javafoo"), "javafoo", "无空白原样")
         XCTAssertEqual(DefinitionMatcher.normalizedCommand("   "), "", "纯空白 → 空")
     }
+
+    // MARK: - 「同实例」规则（F5：收编去重与实例匹配共用的单一事实来源）
+
+    func test同实例判定端口命令规范化一致才算同一实例() {
+        let def = definition(port: 8081, command: "java -jar user-service.jar")
+        XCTAssertTrue(DefinitionMatcher.isSameInstance(
+            port: 8081, commandLine: "  java  -jar user-service.jar ", as: def
+        ), "规范化后一致 = 同一实例（与实例匹配同规则）")
+        XCTAssertFalse(DefinitionMatcher.isSameInstance(
+            port: 8082, commandLine: "java -jar user-service.jar", as: def
+        ), "端口不同 = 不同实例")
+        XCTAssertFalse(DefinitionMatcher.isSameInstance(
+            port: 8081, commandLine: "java -jar order-service.jar", as: def
+        ), "命令不同 = 不同实例")
+    }
 }
