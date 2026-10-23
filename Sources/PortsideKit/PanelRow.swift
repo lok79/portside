@@ -65,6 +65,16 @@ public struct PanelRow: Identifiable, Equatable, Sendable {
     public var openURL: URL? {
         primaryPort.flatMap { URL(string: "http://localhost:\($0)\(pathPrefix)") }
     }
+
+    /// 只翻状态点的副本（探活覆盖用，F2）：其余字段一律原样。
+    func withStatus(isUp: Bool) -> PanelRow {
+        PanelRow(
+            id: id, section: section, isUp: isUp, isManaged: isManaged,
+            definitionID: definitionID, displayName: displayName, typeLabel: typeLabel,
+            ports: ports, uptimeText: uptimeText, commandLine: commandLine, pid: pid,
+            workingDirectory: workingDirectory, pathPrefix: pathPrefix, children: children
+        )
+    }
 }
 
 /// 面板行的构造规则（纯函数）：识别结论 + 运行时长 + 定义上下文 → 各区行。

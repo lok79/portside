@@ -59,6 +59,8 @@ public final class PanelViewModel: ObservableObject {
     /// 日志尾随工厂（工单 07）：可注入假实现验证 stop 纪律。
     private let logTailFactory: LogTailFactory
     private let store: KeyValueStore
+    /// 探活边界（F2）：nil = 不探活（行为与既有扫描驱动一致）；生产 = 真实 TCP connect。
+    private let prober: PortProbing?
     /// 当前刷新档位（工单 09）：init 从持久层恢复（存档无效回落注入默认），切换走 `setRefreshMode`。
     @Published public private(set) var refreshMode: RefreshMode
     private let clock: PortsideClock
@@ -87,6 +89,24 @@ public final class PanelViewModel: ObservableObject {
     private var isRefreshing = false
     /// start 幂等闸（调度器自身幂等，这里防初始刷新重复发）。
     private var started = false
+    /// 最近一轮探活结论（F2）：端口 → 结论；与扫描事实合并出汇总态与托管行状态。
+    private var probeOutcomes: [Int: PortProbeOutcome] = [:]
+    /// 周期探活器（F2）：lazy 装配（nil 探活边界 = nil 探活器）。
+    private lazy var probeLoop: PortProbe? = {
+        guard let prober else { return nil }
+        let known = self.knownDefinitions
+        let clock = self.clock
+        return PortProbe(
+            ports: { known().map(\.port) },
+            prober: prober,
+            clock: clock,
+            onOutcome: { [weak self] port, outcome in
+                Task { @MainActor [weak self] in
+                    self?.applyProbeOutcome(port: port, outcome: outcome)
+                }
+            }
+        )
+    }()
 
     public init(
         scanner: PortScanner,
@@ -102,7 +122,8 @@ public final class PanelViewModel: ObservableObject {
         refreshMode: RefreshMode = RefreshMode.defaultMode,
         idleThreshold: Duration = .seconds(120),
         logLocator: LogLocating? = nil,
-        logTailFactory: LogTailFactory? = nil
+        logTailFactory: LogTailFactory? = nil,
+        prober: PortProbing? = nil
     ) {
         self.scanner = scanner
         self.engine = engine
@@ -115,6 +136,7 @@ public final class PanelViewModel: ObservableObject {
         self.logLocator = logLocator
         self.logTailFactory = logTailFactory ?? Self.defaultLogTailFactory
         self.store = store
+        self.prober = prober
         // 刷新档位（工单 09）：持久层存档优先（重开 app 恢复上次档位），无效值回落注入默认。
         self.refreshMode = RefreshMode(
             rawValue: store.string(forKey: Self.refreshModeKey) ?? ""
@@ -148,13 +170,14 @@ public final class PanelViewModel: ObservableObject {
             store: UserDefaultsStore(),
             logLocator: LogLocator.production(
                 managedLogsDirectory: ShellProcessController.defaultLogsDirectory()
-            )
+            ),
+            prober: TCPConnectProber(timeout: PortProbe.connectTimeout)
         )
     }
 
     // MARK: - 生命周期
 
-    /// 启动：先立刻刷一次（打开即有数据），再进入调度节拍；重复调用无副作用。
+    /// 启动：先立刻刷一次（打开即有数据），再进入调度节拍；探活循环一并起（F2）。重复调用无副作用。
     public func start() {
         guard !started else { return }
         started = true
@@ -162,10 +185,12 @@ public final class PanelViewModel: ObservableObject {
             await self?.refreshOnce()
         }
         scheduler.start()
+        probeLoop?.start()
     }
 
     public func stop() {
         scheduler.stop()
+        probeLoop?.stop()
     }
 
     /// 面板出现（MenuBarExtra 窗口打开）：记录活动 → 活动档快刷。
@@ -283,15 +308,56 @@ public final class PanelViewModel: ObservableObject {
             rows += stopped.map(PanelRowFactory.stoppedRow)
         }
 
-        allRows = rows
+        allRows = applyProbeOverlay(to: rows)
         expandedRowIDs = expandedRowIDs.filter { id in rows.contains { $0.id == id } }
         scanNotice = result.isPartial
             ? (result.partialNotice ?? "清单可能不完整（扫描受限）。")
             : nil
-        health = MenuBarBadge.state(
-            knownServices: knownDefinitions(),
-            listeningPorts: Set(result.services.map(\.port))
-        )
+        health = recomputedHealth(scanPorts: Set(result.services.map(\.port)))
+    }
+
+    // MARK: - 探活接线（F2：spec §7 短超时探活；验收 #2 面板关闭 ≤10s 变色）
+
+    /// 探活结论落地：记录 → 翻托管运行行状态（无响应不翻）→ 重算汇总态。
+    private func applyProbeOutcome(port: Int, outcome: PortProbeOutcome) {
+        probeOutcomes[port] = outcome
+        if outcome != .noResponse {
+            let isUp = outcome == .listening
+            allRows = allRows.map { row in
+                // 只翻托管**运行**行（身份由扫描匹配）；已停止行（`def:` 前缀）的
+                // 「无匹配实例」语义不因端口连通而翻——端口连通 ≠ 定义匹配，不误报。
+                guard row.definitionID != nil, !row.id.hasPrefix("def:"),
+                      row.ports.contains(port), row.isUp != isUp else { return row }
+                return row.withStatus(isUp: isUp)
+            }
+        }
+        health = recomputedHealth(scanPorts: Set(lastScan?.services.map(\.port) ?? []))
+    }
+
+    /// 行重建后叠加既有探活结论（扫描轮/定义变更轮共用）：免扫描重算不丢探活新鲜度。
+    private func applyProbeOverlay(to rows: [PanelRow]) -> [PanelRow] {
+        guard !probeOutcomes.isEmpty else { return rows }
+        return rows.map { row in
+            guard row.definitionID != nil, !row.id.hasPrefix("def:") else { return row }
+            guard let port = row.primaryPort, let outcome = probeOutcomes[port],
+                  outcome != .noResponse else { return row }
+            let isUp = outcome == .listening
+            return row.isUp == isUp ? row : row.withStatus(isUp: isUp)
+        }
+    }
+
+    /// 汇总态 = 扫描事实 ⊕ 探活结论：探活更近实时——
+    /// refused（确定性挂）把端口从监听集剔除；listening 补进来；noResponse 不改判定。
+    private func recomputedHealth(scanPorts: Set<Int>) -> MenuBarBadgeState {
+        var listening = scanPorts
+        for (port, outcome) in probeOutcomes {
+            switch outcome {
+            case .listening: listening.insert(port)
+            case .refused: listening.remove(port)
+            case .noResponse: break   // 无响应 ≠ 挂，不动判定（不误报）
+            }
+        }
+        return MenuBarBadge.state(knownServices: knownDefinitions(), listeningPorts: listening)
     }
 
     // MARK: - 服务定义（收编/编辑，工单 05）
