@@ -308,6 +308,38 @@ final class ProbeWiringTests: XCTestCase {
         XCTAssertNil(witness, "VM↔PortProbe 无环：start/stop 全生命周期后放手即释放")
     }
 
+    /// 评审收尾 G2：定义删除后该端口的探活结论一并作废——探活清单里也不再
+    /// 有这个端口（永不重探），残留 refused 会以旧事实压过新扫描事实（同端口
+    /// 换新定义时行被压灰、图标被压成 alert，最长压 5s 直到下一轮探活……而
+    /// 删除后没有下一轮）。删定义 → 清缓存 → 重算后扫描事实说了算。
+    func test删除定义后探活结论一并作废不压新扫描事实() async throws {
+        let clock = ManualClock()
+        let up = ScanResult(services: [
+            ListeningService(port: 8081, pid: 5011, processName: "java", commandLine: argv),
+        ], source: .lsof)
+        let scanner = FakeScanner([.success(up)])
+        let prober = ScriptedProber([.refused])
+        let (model, center) = makeWiredModel(prober: prober, scanner: scanner, clock: clock)
+        await model.refreshOnce()
+        model.start()
+        addTeardownBlock { model.stop() }
+        try await clock.waitForSleepRegistration()
+        try await clock.waitForSleepRegistration()
+        clock.advance(to: .seconds(5))
+        _ = await waitUntil("refused → 图标 alert") { model.health == .alert }
+
+        // 删除定义（探活缓存应同步清掉），再在同端口收编新定义：扫描说服务在跑。
+        let oldID = try XCTUnwrap(center.all().first?.id)
+        await model.removeDefinition(id: oldID)
+        _ = await model.adoptService(
+            name: "换了新实现", commandLine: argv, port: 8081, pathPrefix: ""
+        )
+
+        XCTAssertEqual(model.rows(in: .mine).first?.isUp, true, "删定义后 refused 残留不得压过扫描事实")
+        XCTAssertEqual(model.health, .normal, "同端口新定义运行中：汇总态回绿，不被陈旧 refused 压成 alert")
+        model.stop()
+    }
+
     func test无探活器时零开销行为不变() async throws {
         let clock = ManualClock()
         let up = ScanResult(services: [

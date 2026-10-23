@@ -391,10 +391,15 @@ public final class PanelViewModel: ObservableObject {
 
     /// 删除服务定义并立即重算面板（工单 09；直接执行路径，UI 走 `requestDeleteDefinition`
     /// 确认流）。只删定义不碰进程；该定义的行内状态一并清掉，不残留僵尸文案。
+    /// 该端口的探活结论同步作废（评审收尾 G2）：定义删了，探活清单里也不再
+    /// 有这个端口——永不重探，残留结论（如 refused）会一直以旧事实压过新扫描
+    /// 事实（同端口换服务/新定义时行被压灰、图标被压 alert，且无下一轮探活翻回）。
     public func removeDefinition(id: String) async {
         guard let definitions else { return }
+        let port = definitions.definition(id: id)?.port
         definitions.remove(id: id)
         managedStatusMessages[id] = nil
+        if let port { probeOutcomes[port] = nil }
         await recompute(from: lastScan ?? ScanResult(services: [], source: .lsof))
     }
 
