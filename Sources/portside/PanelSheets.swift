@@ -151,7 +151,7 @@ struct ManagedActionSheet: View {
                     dismiss()   // 关弹窗 → 派生 binding 置 nil → ViewModel 取消，不杀
                 }
                 .keyboardShortcut(.cancelAction)
-                Button(confirmation.kind == .stop ? "确认停止" : "确认重启") {
+                Button(confirmation.confirmButtonLabel) {
                     onConfirm()
                     dismiss()
                 }

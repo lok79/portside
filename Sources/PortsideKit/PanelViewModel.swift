@@ -317,6 +317,15 @@ public final class PanelViewModel: ObservableObject {
         await recompute(from: lastScan ?? ScanResult(services: [], source: .lsof))
     }
 
+    /// 删除服务定义并立即重算面板（工单 09；直接执行路径，UI 走 `requestDeleteDefinition`
+    /// 确认流）。只删定义不碰进程；该定义的行内状态一并清掉，不残留僵尸文案。
+    public func removeDefinition(id: String) async {
+        guard let definitions else { return }
+        definitions.remove(id: id)
+        managedStatusMessages[id] = nil
+        await recompute(from: lastScan ?? ScanResult(services: [], source: .lsof))
+    }
+
     // MARK: - 托管动作（工单 06：危险动作二次确认 + 启动失败行内状态；日志管道归 07）
 
     /// 「启动」已停止的托管服务。启动失败写进行内状态（不崩 app），成功清除旧状态。
@@ -364,13 +373,24 @@ public final class PanelViewModel: ObservableObject {
         )
     }
 
-    /// 确认待执行动作：此刻才把停止/重启送达进程控制器。
+    /// 请求删除服务定义（工单 09）：只挂起确认，**不删**——定义的服务永久消失后的
+    /// 手动清理入口，不自动删；确认后才移除定义（不碰任何进程）。
+    public func requestDeleteDefinition(_ definitionID: String) {
+        guard let definition = definitions?.definition(id: definitionID) else { return }
+        pendingConfirmation = ManagedActionConfirmation(
+            definitionID: definitionID, kind: .delete,
+            serviceName: definition.name, port: definition.port
+        )
+    }
+
+    /// 确认待执行动作：此刻才把停止/重启/删除送达对应去处。
     public func confirmPendingManagedAction() async {
         guard let pending = pendingConfirmation else { return }
         pendingConfirmation = nil
         switch pending.kind {
         case .stop: await stopService(pending.definitionID)
         case .restart: await restartService(pending.definitionID)
+        case .delete: await removeDefinition(id: pending.definitionID)
         }
     }
 
@@ -500,6 +520,8 @@ public struct ManagedActionConfirmation: Equatable, Sendable, Identifiable {
     public enum Kind: Equatable, Sendable {
         case stop
         case restart
+        /// 删除服务定义（工单 09）：定义的服务永久消失后的手动清理入口，带确认。
+        case delete
     }
 
     public let definitionID: String
@@ -511,16 +533,34 @@ public struct ManagedActionConfirmation: Equatable, Sendable, Identifiable {
 
     public var id: String { definitionID }
 
-    /// 动作标题（「停止服务」/「重启服务」）。
-    public var actionLabel: String { kind == .stop ? "停止服务" : "重启服务" }
+    /// 动作标题（「停止服务」/「重启服务」/「删除服务定义」）。
+    public var actionLabel: String {
+        switch kind {
+        case .stop: return "停止服务"
+        case .restart: return "重启服务"
+        case .delete: return "删除服务定义"
+        }
+    }
 
-    /// 动作解释（GLOSSARY：进程组——对整组发信号，fork 的子进程一并处理）。
+    /// 确认按钮文案（UI 装配用）。
+    public var confirmButtonLabel: String {
+        switch kind {
+        case .stop: return "确认停止"
+        case .restart: return "确认重启"
+        case .delete: return "确认删除"
+        }
+    }
+
+    /// 动作解释（GLOSSARY：进程组——对整组发信号，fork 的子进程一并处理；
+    /// 删除是定义层动作，写明不碰进程，GLOSSARY：服务定义）。
     public var explanation: String {
         switch kind {
         case .stop:
             return "将对「\(serviceName)」（端口 \(port)）的整个进程组发送终止信号，超时未退出则强制结束；它 fork 的子进程一并停止。"
         case .restart:
             return "将先停止「\(serviceName)」（端口 \(port)）的整个进程组（含 fork 的子进程），再按服务定义重新启动。"
+        case .delete:
+            return "将永久删除「\(serviceName)」（端口 \(port)）的服务定义（名称、启动命令、端口）。不会停止任何进程；之后该服务回到外部形态，想再托管需重新收编。"
         }
     }
 }

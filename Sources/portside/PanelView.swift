@@ -275,6 +275,13 @@ struct PanelView: View {
             iconButton("pencil", "改名 / 路径前缀") {
                 editDraft = EditDraft(from: row)
             }
+            if !row.isUp, let id = row.definitionID {
+                // 删除服务定义（工单 09）：定义的服务永久消失后的清理入口，
+                // 带确认（不自动删）；只删定义不碰进程。
+                iconButton("trash", "删除服务定义") {
+                    model.requestDeleteDefinition(id)
+                }
+            }
             if row.isUp, let url = row.openURL {
                 openButton(url, port: row.primaryPort ?? 0)
             }

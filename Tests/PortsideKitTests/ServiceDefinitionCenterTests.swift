@@ -120,4 +120,37 @@ final class ServiceDefinitionCenterTests: XCTestCase {
         XCTAssertEqual(center.all().count, 1)
         XCTAssertEqual(center.all()[0].name, "svc", "不存在的 id：集合不动")
     }
+
+    // MARK: - 删除（工单 09：定义的服务永久消失后，用户手动删掉残留定义）
+
+    func test删除定义移除并落盘重启后不在() {
+        let directory = makeDirectory()
+        let center = makeCenter(directory)
+        let id = center.adopt(name: "user-service", commandLine: "java -jar u.jar", port: 8081, pathPrefix: "").id
+
+        center.remove(id: id)
+
+        XCTAssertTrue(center.all().isEmpty, "删除即从集合移除")
+        XCTAssertNil(makeCenter(directory).definition(id: id), "删除落盘，重启后不在")
+    }
+
+    func test删除只删目标定义其余不动() {
+        let center = makeCenter(makeDirectory())
+        let first = center.adopt(name: "user-service", commandLine: "java -jar u.jar", port: 8081, pathPrefix: "")
+        let second = center.adopt(name: "vite", commandLine: "node vite", port: 5173, pathPrefix: "")
+
+        center.remove(id: first.id)
+
+        XCTAssertEqual(center.all().map(\.name), ["vite"], "只删目标，其余定义原样")
+        XCTAssertEqual(center.definition(id: second.id)?.port, 5173)
+    }
+
+    func test删除不存在的定义无副作用() {
+        let center = makeCenter(makeDirectory())
+        center.adopt(name: "svc", commandLine: "java -jar u.jar", port: 8081, pathPrefix: "")
+
+        center.remove(id: "def-不存在")
+
+        XCTAssertEqual(center.all().count, 1, "不存在的 id：集合不动")
+    }
 }

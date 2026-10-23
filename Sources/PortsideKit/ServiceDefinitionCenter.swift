@@ -98,6 +98,16 @@ public final class ServiceDefinitionCenter: @unchecked Sendable {
         }
     }
 
+    /// 删除定义（工单 09）：定义的服务永久消失后，由用户显式删掉残留定义（带确认，
+    /// 中枢只提供能力、绝不自动删）。只动定义集合，不碰任何进程。id 不存在时无副作用。
+    public func remove(id: String) {
+        lock.withLock {
+            guard let index = definitions.firstIndex(where: { $0.id == id }) else { return }
+            definitions.remove(at: index)
+            persistLocked()
+        }
+    }
+
     /// 落盘当前集合（须持锁调用；写失败由 DefinitionStore 吞掉——内存态已生效，不崩）。
     private func persistLocked() {
         store.save(definitions)
