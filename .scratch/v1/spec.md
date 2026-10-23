@@ -78,7 +78,7 @@ macOS 菜单栏应用：自动发现本机正在运行的开发服务（Java 后
 ## 技术要点
 
 - Swift + SwiftUI + AppKit（NSStatusItem）；Swift Concurrency
-- 端口↔进程：libproc（proc_pidinfo）优先，`lsof -i -P -n`（-P -n 必带，否则 DNS/端口名反解慢到不可用）与 netstat 组合兜底；Java 识别辅以 `jps -l`
+- 端口↔进程：libproc（proc_pidinfo）优先，`lsof -i -P -n`（-P -n 必带，否则 DNS/端口名反解慢到不可用）与 netstat 组合兜底；Java 识别辅以 `jps -l`（v1 实现取舍见 adr/0002）
 - 进程树：Portside 启动的服务挂独立进程组，停止/重启对整组发信号
 - 进程管理：`Process` API + 独立进程组；托管服务输出直写日志文件（`~/.portside/logs/<name>.log` 或应用容器内，实现时定；真 PTY 留给 v1.x），日志 UI = tail 文件
 - 定义持久化：本地配置文件（随应用数据目录）

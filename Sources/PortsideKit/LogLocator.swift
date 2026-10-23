@@ -17,7 +17,6 @@ public struct LogContext: Equatable, Sendable {
     /// 进程 id（fd 扫描输入）；降级数据源拿不到为 nil。
     public let pid: Int?
     /// 工作目录（目录兜底输入）；采集不到为 nil。
-
     public let workingDirectory: String?
     /// true = 认领的受管外部实例（工单 08）；亲生托管/外部服务为 false。
     public let isReclaimed: Bool
@@ -162,7 +161,8 @@ public struct LogLocator: LogLocating {
             if let best = pickRecent(candidates) {
                 return .available(URL(fileURLWithPath: best))
             }
-        }        // ② 目录惯例兜底：lsof 失败/无命中时，工作目录下找最近修改的惯例文件。
+        }
+        // ② 目录惯例兜底：lsof 失败/无命中时，工作目录下找最近修改的惯例文件。
         if let cwd = context.workingDirectory,
            let best = pickRecent(conventionalFiles(cwd: cwd)) {
             return .available(URL(fileURLWithPath: best))
