@@ -1,0 +1,183 @@
+import Foundation
+
+/// 面板 ViewModel（工单 04）：把 RefreshScheduler 驱动的 CompositeScanner → 识别 →
+/// 分区 串成一条 @MainActor 管线（GLOSSARY：面板/扫描器）。
+/// - 服务上下线自动反映：每轮 tick 全量重扫重算后发布，无手动刷新按钮（spec 用户故事 1）。
+/// - 「隐藏其他」经注入的 KeyValueStore 持久化；隐藏/折叠只影响渲染，模型层数据不丢。
+/// - 菜单栏汇总态每轮随扫描重算（GLOSSARY：菜单栏图标；注入 knownDefinitions 可测）。
+/// - 低资源：面板可见才记录活动（活动档 5s），隐藏后退避（空闲档 30s/120s）；
+///   UI 不做每秒重算，行内文案只在扫描轮更新。
+@MainActor
+public final class PanelViewModel: ObservableObject {
+    /// 「隐藏其他」的持久化键。
+    public static let hideOtherKey = "panel.hideOther"
+
+    // MARK: - 面板状态（UI 唯一读取面）
+
+    /// 全量行（含被隐藏分区的行）——隐藏只影响渲染不丢数据。
+    @Published public private(set) var allRows: [PanelRow] = []
+    /// 列表顶部明示行：partial 扫描的解释文案 / 扫描失败提示；nil = 正常不显。
+    @Published public private(set) var scanNotice: String?
+    /// 菜单栏汇总态（MenuBarExtra 图标据此切换）。
+    @Published public private(set) var health: MenuBarBadgeState = .normal
+    /// 聚合行展开状态（渲染态，默认折叠；不持久化）。
+    @Published private var expandedRowIDs: Set<String> = []
+    /// 「隐藏其他」开关：读经持久层，写穿持久层。
+    @Published public var isOtherHidden: Bool {
+        didSet { store.set(isOtherHidden, forKey: Self.hideOtherKey) }
+    }
+
+    // MARK: - 协作对象
+
+    private let scanner: PortScanner
+    private let engine: ServiceIdentificationEngine
+    private let resolver: DisplayNameResolver
+    private let assigner: SectionAssigner
+    private let knownDefinitions: @Sendable () -> [KnownServiceDefinition]
+    private let uptimeFetcher: ProcessUptimeFetcher?
+    private let store: KeyValueStore
+    private let refreshMode: RefreshMode
+    private let clock: PortsideClock
+    private let idleThreshold: Duration
+    /// lazy：创建时才捕获 self（初始化完成后），避免 init 两阶段限制。
+    private lazy var scheduler = RefreshScheduler(
+        mode: refreshMode, clock: clock, idleThreshold: idleThreshold
+    ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+            await self?.refreshOnce()
+        }
+    }
+    /// 在途刷新闸：上一轮没落定就跳过本轮 tick，避免扫描慢时任务堆积（低资源）。
+    private var isRefreshing = false
+    /// start 幂等闸（调度器自身幂等，这里防初始刷新重复发）。
+    private var started = false
+
+    public init(
+        scanner: PortScanner,
+        engine: ServiceIdentificationEngine,
+        resolver: DisplayNameResolver = DisplayNameResolver(),
+        assigner: SectionAssigner = SectionAssigner(),
+        knownDefinitions: @escaping @Sendable () -> [KnownServiceDefinition] = { [] },
+        uptimeFetcher: ProcessUptimeFetcher? = nil,
+        store: KeyValueStore,
+        clock: PortsideClock = SystemClock(),
+        refreshMode: RefreshMode = RefreshMode.defaultMode,
+        idleThreshold: Duration = .seconds(120)
+    ) {
+        self.scanner = scanner
+        self.engine = engine
+        self.resolver = resolver
+        self.assigner = assigner
+        self.knownDefinitions = knownDefinitions
+        self.uptimeFetcher = uptimeFetcher
+        self.store = store
+        self.refreshMode = refreshMode
+        self.clock = clock
+        self.idleThreshold = idleThreshold
+        self.isOtherHidden = store.bool(forKey: Self.hideOtherKey)
+    }
+
+    /// 生产装配：真实扫描器 + 识别引擎 + ps 运行时长采集 + UserDefaults 偏好。
+    public static func production() -> PanelViewModel {
+        let runner = SystemProcessRunner()
+        return PanelViewModel(
+            scanner: CompositeScanner(runner: runner),
+            engine: .defaultEngine(runner: runner),
+            uptimeFetcher: ProcessUptimeFetcher(runner: runner),
+            store: UserDefaultsStore()
+        )
+    }
+
+    // MARK: - 生命周期
+
+    /// 启动：先立刻刷一次（打开即有数据），再进入调度节拍；重复调用无副作用。
+    public func start() {
+        guard !started else { return }
+        started = true
+        Task { [weak self] in
+            await self?.refreshOnce()
+        }
+        scheduler.start()
+    }
+
+    public func stop() {
+        scheduler.stop()
+    }
+
+    /// 面板出现（MenuBarExtra 窗口打开）：记录活动 → 活动档快刷。
+    public func panelDidAppear() {
+        scheduler.recordActivity()
+    }
+
+    /// 面板隐藏：不记录活动 → 空闲退避（低资源：隐藏时不加速刷新）。
+    public func panelDidDisappear() {}
+
+    // MARK: - 行查询（渲染用）
+
+    /// 某分区的行（数据层，不受「隐藏其他」影响；渲染层自行判断 isOtherHidden）。
+    public func rows(in section: ServiceSectionKind) -> [PanelRow] {
+        allRows.filter { $0.section == section }
+    }
+
+    /// 聚合行是否展开（默认折叠）。
+    public func isExpanded(_ id: String) -> Bool {
+        expandedRowIDs.contains(id)
+    }
+
+    /// 展开/收起聚合行。
+    public func toggleExpanded(_ id: String) {
+        if expandedRowIDs.contains(id) {
+            expandedRowIDs.remove(id)
+        } else {
+            expandedRowIDs.insert(id)
+        }
+    }
+
+    // MARK: - 管线
+
+    /// 一轮完整刷新：扫描 → 识别 → 分区 → 行模型 → 发布。可独立调用（测试/首刷共用）。
+    public func refreshOnce() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        let result: ScanResult
+        do {
+            result = try await scanner.scan()
+        } catch {
+            // 扫描失败：保留上次数据（不折腾用户），顶部明示（不装死）。
+            scanNotice = "扫描失败，显示的是上一次结果：\(String(describing: error))"
+            return
+        }
+
+        let identified = await engine.identifyAll(result.services, resolver: resolver)
+        let uptimes = await uptimeFetcher?.fetch(pids: identified.compactMap { $0.service.pid }) ?? [:]
+        let grouping = assigner.group(identified)
+
+        var rows: [PanelRow] = []
+        rows.reserveCapacity(identified.count)
+        for section in ServiceSectionKind.allCases {
+            let services = grouping[section] ?? []
+            if section == .other {
+                rows += PanelRowFactory.aggregatedRows(from: services, uptimes: uptimes)
+            } else {
+                rows += services.map { service in
+                    PanelRowFactory.leafRow(
+                        for: service, section: section,
+                        uptimeText: service.service.pid.flatMap { uptimes[$0] }.map(UptimeText.format)
+                    )
+                }
+            }
+        }
+
+        allRows = rows
+        expandedRowIDs = expandedRowIDs.filter { id in rows.contains { $0.id == id } }
+        scanNotice = result.isPartial
+            ? (result.partialNotice ?? "清单可能不完整（扫描受限）。")
+            : nil
+        health = MenuBarBadge.state(
+            knownServices: knownDefinitions(),
+            listeningPorts: Set(result.services.map(\.port))
+        )
+    }
+}
