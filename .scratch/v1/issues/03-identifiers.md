@@ -4,9 +4,9 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] fixture 命令行用例：Java fat jar / `jps -l` 交叉验证、vite、next dev、vue-cli、python 脚本（未知）、node 普通脚本（未知）
-- [ ] 版本尾巴清洗规则测试（-1.0.0-SNAPSHOT、-布尔版本等），清洗失败显示原名不猜
-- [ ] 显示名优先级（别名 > 清洗 > 未知）与同名多实例并存（同名不同端口各占一行）测试
-- [ ] 识别器协议定义：新增识别器只加实现不改扫描引擎
+- [x] fixture 命令行用例：Java fat jar / `jps -l` 交叉验证、vite、next dev、vue-cli、python 脚本（未知）、node 普通脚本（未知）
+- [x] 版本尾巴清洗规则测试（-1.0.0-SNAPSHOT、-布尔版本等），清洗失败显示原名不猜
+- [x] 显示名优先级（别名 > 清洗 > 未知）与同名多实例并存（同名不同端口各占一行）测试
+- [x] 识别器协议定义：新增识别器只加实现不改扫描引擎
