@@ -342,25 +342,52 @@ public final class PanelViewModel: ObservableObject {
     }
 
     /// 停止托管服务（直接执行路径；UI 走 `requestStopService` 确认流）。
+    /// 被安全阀拒绝（占用者换人，F3）等错误走行内状态显示，不装死。
     public func stopService(_ definitionID: String) async {
         guard let definition = definitions?.definition(id: definitionID) else { return }
-        try? await processController?.stop(definition)
+        do {
+            try await processController?.stop(definition)
+            managedStatusMessages[definitionID] = nil
+        } catch {
+            managedStatusMessages[definitionID] = Self.stopFailureMessage(error)
+        }
         await refreshOnce()
     }
 
     /// 重启托管服务（直接执行路径；UI 走 `requestRestartService` 确认流）。
     public func restartService(_ definitionID: String) async {
         guard let definition = definitions?.definition(id: definitionID) else { return }
-        try? await processController?.restart(definition)
+        do {
+            try await processController?.restart(definition)
+            managedStatusMessages[definitionID] = nil
+        } catch {
+            managedStatusMessages[definitionID] = Self.stopFailureMessage(error)
+        }
         await refreshOnce()
     }
 
-    /// 请求停止：只挂起确认（服务名/端口/动作解释），**不杀**——确认后才送达控制器。
+    /// 停止/重启失败的行内文案：已知错误类型给人话，未知类型原样明示（不装死）。
+    private static func stopFailureMessage(_ error: Error) -> String {
+        (error as? ProcessStopError)?.userMessage
+            ?? (error as? ProcessStartError)?.userMessage
+            ?? "停止失败：\(String(describing: error))"
+    }
+
+    /// 最近一轮扫描里占用该端口的实例事实（F3：弹窗解释的数据源；扫描未及为 nil，不猜）。
+    private static func occupierFacts(of port: Int, in scan: ScanResult?) -> ManagedActionConfirmation.OccupierFacts? {
+        guard let service = scan?.services.first(where: { $0.port == port }) else { return nil }
+        return ManagedActionConfirmation.OccupierFacts(
+            pid: service.pid, processName: service.processName
+        )
+    }
+
+    /// 请求停止：只挂起确认（服务名/端口/动作解释/当前占用者），**不杀**——确认后才送达控制器。
     public func requestStopService(_ definitionID: String) {
         guard let definition = definitions?.definition(id: definitionID) else { return }
         pendingConfirmation = ManagedActionConfirmation(
             definitionID: definitionID, kind: .stop,
-            serviceName: definition.name, port: definition.port
+            serviceName: definition.name, port: definition.port,
+            occupier: Self.occupierFacts(of: definition.port, in: lastScan)
         )
     }
 
@@ -369,7 +396,8 @@ public final class PanelViewModel: ObservableObject {
         guard let definition = definitions?.definition(id: definitionID) else { return }
         pendingConfirmation = ManagedActionConfirmation(
             definitionID: definitionID, kind: .restart,
-            serviceName: definition.name, port: definition.port
+            serviceName: definition.name, port: definition.port,
+            occupier: Self.occupierFacts(of: definition.port, in: lastScan)
         )
     }
 
@@ -517,6 +545,28 @@ public typealias LogTailFactory = @Sendable (
 /// 纯数据，UI 据此渲染弹窗；确认/取消走 ViewModel 状态机（可测：确认前不杀、确认后才杀）。
 /// Identifiable（id = 定义 id）供 SwiftUI sheet(item:) 使用；同一定义重复请求直接覆盖。
 public struct ManagedActionConfirmation: Equatable, Sendable, Identifiable {
+    /// 当前实际占用者事实（评审修复 F3：spec §4「显示占用者解释」——pid+进程名
+    /// 来自最近一轮扫描的面板管线数据；扫描未及该端口为 nil，不猜）。
+    public struct OccupierFacts: Equatable, Sendable {
+        public let pid: Int?
+        public let processName: String?
+
+        public init(pid: Int?, processName: String?) {
+            self.pid = pid
+            self.processName = processName
+        }
+
+        /// 解释用描述：「pid 5011（java）」；缺啥补啥，全缺为「未知进程」。
+        public var description: String {
+            switch (pid, processName) {
+            case let (pid?, name?): return "pid \(pid)（\(name)）"
+            case let (pid?, nil): return "pid \(pid)"
+            case let (nil, name?): return name
+            default: return "未知进程"
+            }
+        }
+    }
+
     public enum Kind: Equatable, Sendable {
         case stop
         case restart
@@ -530,8 +580,21 @@ public struct ManagedActionConfirmation: Equatable, Sendable, Identifiable {
     public let serviceName: String
     /// 定义的端口。
     public let port: Int
+    /// 当前实际占用者（stop/restart 有，delete 无；扫描未及为 nil）。
+    public let occupier: OccupierFacts?
 
     public var id: String { definitionID }
+
+    public init(
+        definitionID: String, kind: Kind, serviceName: String, port: Int,
+        occupier: OccupierFacts? = nil
+    ) {
+        self.definitionID = definitionID
+        self.kind = kind
+        self.serviceName = serviceName
+        self.port = port
+        self.occupier = occupier
+    }
 
     /// 动作标题（「停止服务」/「重启服务」/「删除服务定义」）。
     public var actionLabel: String {
@@ -553,14 +616,23 @@ public struct ManagedActionConfirmation: Equatable, Sendable, Identifiable {
 
     /// 动作解释（GLOSSARY：进程组——对整组发信号，fork 的子进程一并处理；
     /// 删除是定义层动作，写明不碰进程，GLOSSARY：服务定义）。
+    /// stop/restart 带当前实际占用者（spec §4「显示占用者解释」；无事实不带，不猜）。
     public var explanation: String {
         switch kind {
         case .stop:
-            return "将对「\(serviceName)」（端口 \(port)）的整个进程组发送终止信号，超时未退出则强制结束；它 fork 的子进程一并停止。"
+            return occupierClause
+                + "将对「\(serviceName)」（端口 \(port)）的整个进程组发送终止信号，超时未退出则强制结束；它 fork 的子进程一并停止。"
         case .restart:
-            return "将先停止「\(serviceName)」（端口 \(port)）的整个进程组（含 fork 的子进程），再按服务定义重新启动。"
+            return occupierClause
+                + "将先停止「\(serviceName)」（端口 \(port)）的整个进程组（含 fork 的子进程），再按服务定义重新启动。"
         case .delete:
             return "将永久删除「\(serviceName)」（端口 \(port)）的服务定义（名称、启动命令、端口）。不会停止任何进程；之后该服务回到外部形态，想再托管需重新收编。"
         }
+    }
+
+    /// 占用者从句：有事实时「当前占用者：pid 5011（java）。」；无事实为空串（不猜）。
+    private var occupierClause: String {
+        guard let occupier else { return "" }
+        return "当前占用者：\(occupier.description)。"
     }
 }

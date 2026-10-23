@@ -113,4 +113,29 @@ final class DefinitionMatcherTests: XCTestCase {
             port: 8081, commandLine: "java -jar order-service.jar", as: def
         ), "命令不同 = 不同实例")
     }
+
+    // MARK: - 占用者 ↔ 定义 命令一致性（F3：端口兜底停止的宁漏杀不误杀校验）
+
+    func test占用者命令与定义一致才算匹配() {
+        // 完全一致（规范化后）。
+        XCTAssertTrue(DefinitionMatcher.occupierCommandMatches(
+            occupier: "java -jar user-service.jar", definitionCommand: "java -jar user-service.jar"
+        ))
+        // 路径前缀差异容忍：登录 shell PATH 解析与 ps argv[0] 形态差异（实测两态并存）。
+        XCTAssertTrue(DefinitionMatcher.occupierCommandMatches(
+            occupier: "/usr/bin/nc -l 18123", definitionCommand: "nc -l 18123"
+        ))
+        // 可执行名不同 → 不匹配（占用者换人，绝不杀）。
+        XCTAssertFalse(DefinitionMatcher.occupierCommandMatches(
+            occupier: "python3 -m http.server 8081", definitionCommand: "java -jar user-service.jar"
+        ))
+        // 参数不同 → 不匹配（同名的另一个程序不算）。
+        XCTAssertFalse(DefinitionMatcher.occupierCommandMatches(
+            occupier: "/usr/bin/nc -l 9999", definitionCommand: "nc -l 18123"
+        ))
+        // 空命令无从比对 → 不匹配。
+        XCTAssertFalse(DefinitionMatcher.occupierCommandMatches(
+            occupier: "   ", definitionCommand: "nc -l 18123"
+        ))
+    }
 }

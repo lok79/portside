@@ -23,6 +23,29 @@ public struct DefinitionMatcher: Sendable {
             && normalizedCommand(commandLine) == normalizedCommand(definition.launchCommand)
     }
 
+    /// 占用者 ↔ 定义 命令一致性（工单 06 端口兜底停止的杀前校验，宁漏杀不误杀）：
+    /// - 规范化后全等，或
+    /// - 可执行名一致（首 token 的文件名部分）+ 其余参数逐段一致。
+    ///   路径前缀差异容忍：登录 shell PATH 解析与 ps argv[0] 形态两态并存
+    ///   （`nc -l 8081` 与 `/usr/bin/nc -l 8081` 是同一个服务）。
+    /// 可执行名与参数尾任一不同 → 不匹配（占用者换人，绝不发信号）。
+    public static func occupierCommandMatches(
+        occupier: String, definitionCommand: String
+    ) -> Bool {
+        let occupierTokens = normalizedCommand(occupier).split(separator: " ").map(String.init)
+        let definitionTokens = normalizedCommand(definitionCommand).split(separator: " ").map(String.init)
+        guard !occupierTokens.isEmpty, !definitionTokens.isEmpty else { return false }
+        if occupierTokens == definitionTokens { return true }
+        guard occupierTokens.count == definitionTokens.count,
+              occupierTokens.dropFirst() == definitionTokens.dropFirst() else { return false }
+        return executableName(of: occupierTokens[0]) == executableName(of: definitionTokens[0])
+    }
+
+    /// 命令首 token 的文件名部分：`/usr/bin/nc` → `nc`（与扫描器同源口径）。
+    private static func executableName(of command: String) -> String {
+        (command as NSString).lastPathComponent
+    }
+
     /// 在定义集合中找与运行中实例匹配的定义；无匹配返回 nil。
     public func definition(
         matching service: ListeningService, in definitions: [ServiceDefinition]

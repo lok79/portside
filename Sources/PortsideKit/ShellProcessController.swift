@@ -32,6 +32,20 @@ public enum ProcessStartError: Error, Equatable {
     }
 }
 
+/// 停止被拒原因（评审修复 F3：端口兜底停止的宁漏杀不误杀安全阀）。
+public enum ProcessStopError: Error, Equatable {
+    /// 端口当前占用者与定义启动命令不匹配（或命令行无从校验）——一个信号都不发。
+    case occupierMismatch(pid: pid_t, processName: String)
+
+    /// 行内展示文案（GLOSSARY：面板——错误信息可见，不装死）。
+    public var userMessage: String {
+        switch self {
+        case .occupierMismatch(let pid, let name):
+            return "端口已被 \(pid)（\(name)）占用，未停止"
+        }
+    }
+}
+
 /// 托管服务生命周期真实现（工单 06，GLOSSARY：托管服务——启动/停止/重启全量可用）。
 /// - **启动**：经用户登录 shell（`$SHELL -l -c "<命令>"`，继承 nvm 等 profile 环境）；
 ///   POSIX `posix_spawn` + `POSIX_SPAWN_SETPGROUP` 建独立进程组（新组领袖 = 子进程，
@@ -342,10 +356,25 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         removeEntry(entry)
     }
 
-    /// 端口兜底停止：lsof 找占用定义端口的 pid，逐个 TERM → 宽限 → KILL（尽力而为）。
+    /// 端口兜底停止：lsof 找占用定义端口的**监听者**，杀前校验（F3 安全阀，宁漏杀不误杀）：
+    /// 每个监听者的命令行必须与定义启动命令经 DefinitionMatcher 规范化匹配，
+    /// 任一不匹配（或命令行无从取得）→ 中止并抛「端口已被 … 占用，未停止」，
+    /// 一个信号都不发。校验通过后逐个 TERM → 宽限 → KILL（尽力而为）。
     private func stopByPort(_ definition: ServiceDefinition) async throws {
         let pids = await listenerPIDs(port: definition.port)
         guard !pids.isEmpty else { return }
+        for pid in pids {
+            // 命令行取不到 = 无从校验 = 不杀（与"不匹配"同处置，如实报「未知进程」）。
+            let command = await commandLine(of: pid)
+            guard let command,
+                  DefinitionMatcher.occupierCommandMatches(
+                      occupier: command, definitionCommand: definition.launchCommand
+                  )
+            else {
+                let name = command.map { LsofScanner.executableName(of: $0) } ?? "未知进程"
+                throw ProcessStopError.occupierMismatch(pid: pid, processName: name)
+            }
+        }
         let ownGroup = getpgrp()
         let ownPID = ProcessInfo.processInfo.processIdentifier
         for pid in pids where pid != ownPID {
@@ -370,16 +399,26 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         }
     }
 
-    /// 占用端口的进程清单（lsof `-ti tcp:<port>`；失败返回空——尽力而为）。
+    /// 占用端口的监听进程清单（lsof `-ti tcp:<port> -sTCP:LISTEN`；只取监听者，
+    /// 不含恰好连着该端口的客户进程——误杀客户是比漏杀更坏的结局；失败返回空）。
     private func listenerPIDs(port: Int) async -> [pid_t] {
         guard let runner else { return [] }
         guard let output = try? await runner.run(
-            launchPath: LsofScanner.lsofPath, arguments: ["-ti", "tcp:\(port)"]
+            launchPath: LsofScanner.lsofPath, arguments: ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
         ) else { return [] }
         return output.stdout
             .split(whereSeparator: \.isNewline)
             .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
             .filter { $0 > 0 }
+    }
+
+    /// 进程完整命令行（`ps -ww -o command=`）；取不到返回 nil（调用方无从校验 → 不杀）。
+    private func commandLine(of pid: pid_t) async -> String? {
+        guard let runner, let output = try? await runner.run(
+            launchPath: LsofScanner.psPath, arguments: ["-p", "\(pid)", "-ww", "-o", "command="]
+        ) else { return nil }
+        let command = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
     }
 
     /// 测试兜底（同步）：SIGKILL 全部被追踪进程组并清空注册表。

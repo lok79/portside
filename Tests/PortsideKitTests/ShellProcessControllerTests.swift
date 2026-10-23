@@ -252,12 +252,7 @@ final class ShellProcessControllerTests: XCTestCase {
         let controller = makeController(gracePeriod: .milliseconds(300), runner: SystemProcessRunner())
         // 外部监听者：不经 controller 启动（Foundation Process，留在 xctest 自己的组里——
         // 兜底路径的安全设计：占用者与 Portside 同组时只杀该 pid，绝不发组信号）。
-        let listener = Process()
-        listener.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
-        listener.arguments = ["-l", "18123"]
-        listener.standardOutput = FileHandle.nullDevice
-        listener.standardError = FileHandle.nullDevice
-        try listener.run()
+        let listener = try Self.startListener(port: 18123)
         defer { if listener.isRunning { kill(listener.processIdentifier, SIGKILL) } }
         // 等 nc 真的在监听（lsof 能看到）。
         try await waitUntil("nc 已监听 18123") {
@@ -270,6 +265,53 @@ final class ShellProcessControllerTests: XCTestCase {
 
         try await waitUntil("占用端口的进程被终止") {
             kill(pid_t(listener.processIdentifier), 0) != 0
+        }
+    }
+
+    /// F3(b) 宁漏杀不误杀：占用者与定义启动命令不匹配 → 中止并抛错，一个信号都不发。
+    /// 真实进程：nc 占着端口，定义却写着另一个命令——停止必须拒绝且 nc 活着。
+    func test占用者与定义命令不匹配时兜底停止中止且不杀() async throws {
+        let controller = makeController(gracePeriod: .milliseconds(300), runner: SystemProcessRunner())
+        let listener = try Self.startListener(port: 18131)
+        defer { if listener.isRunning { kill(listener.processIdentifier, SIGKILL) } }
+        try await waitUntil("nc 已监听 18131") {
+            Self.lsofPids(port: 18131).contains(pid_t(listener.processIdentifier))
+        }
+
+        let def = definition(id: "def-占用者换人", command: "java -jar ghost-service.jar", port: 18131)
+        do {
+            try await controller.stop(def)
+            XCTFail("占用者换人必须拒绝停止（宁漏杀不误杀）")
+        } catch let error as ProcessStopError {
+            guard case .occupierMismatch(let pid, let name) = error else {
+                XCTFail("错误类型不对：\(error)")
+                return
+            }
+            XCTAssertEqual(pid, pid_t(listener.processIdentifier), "错误带真实占用者 pid")
+            XCTAssertEqual(name, "nc", "错误带占用者进程名")
+        }
+
+        XCTAssertTrue(kill(listener.processIdentifier, 0) == 0, "不匹配：一个信号都不发，nc 仍存活")
+    }
+
+    /// F3(b) 命令行取不到（ps 失败）= 无从校验 → 宁漏杀不误杀，同样拒绝。
+    func test占用者命令行取不到时兜底停止拒绝() async throws {
+        // FakeProcessRunner 无 ps 路由 → commandLine(of:) 必然失败。
+        let runner = FakeProcessRunner()
+        runner.on(LsofScanner.lsofPath, ["-ti", "tcp:18133", "-sTCP:LISTEN"], stdout: "4242\n")
+        let controller = makeController(gracePeriod: .milliseconds(300), runner: runner)
+        let def = definition(id: "def-命令不可得", command: "nc -l 18133", port: 18133)
+
+        do {
+            try await controller.stop(def)
+            XCTFail("命令行不可得必须拒绝（无从校验 = 不杀）")
+        } catch let error as ProcessStopError {
+            guard case .occupierMismatch(let pid, let name) = error else {
+                XCTFail("错误类型不对：\(error)")
+                return
+            }
+            XCTAssertEqual(pid, 4242)
+            XCTAssertEqual(name, "未知进程", "进程名取不到也明示，不猜")
         }
     }
 
@@ -287,6 +329,17 @@ final class ShellProcessControllerTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
             .split(whereSeparator: \.isNewline)
             .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    /// 起一个真实 nc 监听者（兜底停止路径的占用进程；调用方负责 defer 必杀）。
+    private static func startListener(port: Int) throws -> Process {
+        let listener = Process()
+        listener.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+        listener.arguments = ["-l", "\(port)"]
+        listener.standardOutput = FileHandle.nullDevice
+        listener.standardError = FileHandle.nullDevice
+        try listener.run()
+        return listener
     }
 
     // MARK: - S4 重启 = 停止 + 启动
