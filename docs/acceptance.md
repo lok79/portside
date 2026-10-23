@@ -97,3 +97,4 @@ v1 发版（以及之后每次发版）前的唯一验收清单：spec 验收标
 |---|---|---|---|
 | 2026-10-23 | v1 收口：机器项全套（`swift test` 209 用例 0 失败，含 `PORTSIDE_SMOKE=1` 冒烟） | ✅ 机器项通过（待人工收尾） | 本机 macOS 26（Darwin 25.6.0/arm64）实跑 lsof 对照无缺失。人工项待跑：A1（真实 Java×2+vite）、A2（真 kill 图标时机）、A3（真 nohup 预填目测）、A4（实机退出重开认领）、A5（真 QQ/微信）、A6（1 小时挂机内存/CPU）、A7（真 fork 树 ps 对照）、A8（日常机复跑冒烟） |
 | 2026-10-24 | 评审修复轮 F1-F10：`swift test` 227 用例 0 失败（基线 209 + 新增 18），3 连跑无 flaky | ✅ 机器项通过（待人工收尾同上） | F2 探活落地后 #2 的 10 秒线在空闲档由机器证据覆盖（ProbeWiringTests/PortProbeTests，见验收表 #2）；F3 停止安全阀与占用者解释（ShellProcessControllerTests/ManagedActionFlowTests，见 A7）；F4 数据源取舍见 adr/0002（验收表 #10 补记）；F1 外部行「打开」补齐（工单 04 验收项补勾） |
+| 2026-10-24 | 评审收尾轮 G1-G5：`swift test` 230 用例 0 失败（基线 227 + 新增 3），3 连跑无 flaky | ✅ 机器项通过（待人工收尾同上） | G1 探活装配闭包统一弱捕获 self、断 VM↔PortProbe 环（生命周期钉住：`ProbeWiringTests.test探活装配闭包不强捕self未启动也放手即释`、`test启动停止后VM释放探活接线不环持`）；G2 删定义同步作废该端口探活结论（`test删除定义后探活结论一并作废不压新扫描事实`）；G3 词条/取舍/限制三处文档同步（GLOSSARY 扫描器口径、本页已知取舍、已知限制） |
