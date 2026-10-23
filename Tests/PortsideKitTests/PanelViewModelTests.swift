@@ -1,10 +1,11 @@
 import XCTest
 @testable import PortsideKit
 
-/// 测试替身：内存键值存储（工单 04：「隐藏其他」持久化的注入点）。
+/// 测试替身：内存键值存储（工单 04：「隐藏其他」持久化的注入点；工单 09：刷新档位）。
 final class InMemoryKeyValueStore: KeyValueStore, @unchecked Sendable {
     private let lock = NSLock()
     private var bools: [String: Bool] = [:]
+    private var strings: [String: String] = [:]
 
     func bool(forKey key: String) -> Bool {
         lock.withLock { bools[key] ?? false }
@@ -12,6 +13,14 @@ final class InMemoryKeyValueStore: KeyValueStore, @unchecked Sendable {
 
     func set(_ value: Bool, forKey key: String) {
         lock.withLock { bools[key] = value }
+    }
+
+    func string(forKey key: String) -> String? {
+        lock.withLock { strings[key] }
+    }
+
+    func set(_ value: String?, forKey key: String) {
+        lock.withLock { strings[key] = value }
     }
 }
 

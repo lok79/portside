@@ -14,6 +14,8 @@ import Foundation
 public final class PanelViewModel: ObservableObject {
     /// 「隐藏其他」的持久化键。
     public static let hideOtherKey = "panel.hideOther"
+    /// 刷新三档的持久化键（工单 09：主窗设置区三选一，存 rawValue）。
+    public static let refreshModeKey = "panel.refreshMode"
 
     // MARK: - 面板状态（UI 唯一读取面）
 
@@ -57,7 +59,8 @@ public final class PanelViewModel: ObservableObject {
     /// 日志尾随工厂（工单 07）：可注入假实现验证 stop 纪律。
     private let logTailFactory: LogTailFactory
     private let store: KeyValueStore
-    private let refreshMode: RefreshMode
+    /// 当前刷新档位（工单 09）：init 从持久层恢复（存档无效回落注入默认），切换走 `setRefreshMode`。
+    @Published public private(set) var refreshMode: RefreshMode
     private let clock: PortsideClock
     private let idleThreshold: Duration
     /// 最近一次成功扫描结果：定义变更时免扫描重算（低资源：改名/收编不触发新一轮 lsof）。
@@ -112,7 +115,10 @@ public final class PanelViewModel: ObservableObject {
         self.logLocator = logLocator
         self.logTailFactory = logTailFactory ?? Self.defaultLogTailFactory
         self.store = store
-        self.refreshMode = refreshMode
+        // 刷新档位（工单 09）：持久层存档优先（重开 app 恢复上次档位），无效值回落注入默认。
+        self.refreshMode = RefreshMode(
+            rawValue: store.string(forKey: Self.refreshModeKey) ?? ""
+        ) ?? refreshMode
         self.clock = clock
         self.idleThreshold = idleThreshold
         self.isOtherHidden = store.bool(forKey: Self.hideOtherKey)
@@ -171,6 +177,14 @@ public final class PanelViewModel: ObservableObject {
     /// 同时停掉日志 tail 并退出日志视图（工单 07：面板隐藏即停，重开回列表）。
     public func panelDidDisappear() {
         closeLog()
+    }
+
+    /// 切换刷新三档（工单 09，spec §1）：写穿持久层（重开仍在）+ 送达调度器
+    /// （对在途轮不生效，下一轮起用新档——即时生效的可观测口径）。
+    public func setRefreshMode(_ mode: RefreshMode) {
+        refreshMode = mode
+        store.set(mode.rawValue, forKey: Self.refreshModeKey)
+        scheduler.setMode(mode)
     }
 
     // MARK: - 行查询（渲染用）
