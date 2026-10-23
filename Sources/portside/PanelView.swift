@@ -1,11 +1,16 @@
 import SwiftUI
 import PortsideKit
 
-/// 紧凑主窗（面板，GLOSSARY）：四区列表 + partial 明示 + 「隐藏其他」开关。
+/// 紧凑主窗（面板，GLOSSARY）：四区列表 + partial 明示 + 「隐藏其他」开关 +
+/// 收编/托管动作（工单 05：外部行「收编」入口；托管行 启动/停止/重启/日志/编辑）。
 /// 数据全部来自 PanelViewModel（PortsideKit），本文件只负责装配与样式——
 /// 隐藏/折叠只影响渲染（视图层判断），模型层数据不丢。
 struct PanelView: View {
     @ObservedObject var model: PanelViewModel
+    /// 收编弹窗（非 nil 即弹出）；取消 = 置 nil，不产生定义。
+    @State private var adoptDraft: AdoptDraft?
+    /// 别名/路径前缀编辑弹窗。
+    @State private var editDraft: EditDraft?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -52,6 +57,19 @@ struct PanelView: View {
             .padding(.vertical, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // 收编 / 编辑弹窗（工单 05）：保存走 ViewModel（立即重算），取消仅关弹窗。
+        .sheet(item: $adoptDraft) { draft in
+            AdoptSheet(draft: draft) { name, command, port, prefix in
+                Task { await model.adoptService(
+                    name: name, commandLine: command, port: port, pathPrefix: prefix
+                ) }
+            }
+        }
+        .sheet(item: $editDraft) { draft in
+            EditSheet(draft: draft) { name, prefix in
+                Task { await model.editDefinition(id: draft.id, name: name, pathPrefix: prefix) }
+            }
+        }
         // 面板可见性 ↔ 刷新活动：可见时记录活动（活动档快刷），隐藏后自然退避（低资源）。
         .onAppear { model.panelDidAppear() }
         .onDisappear { model.panelDidDisappear() }
@@ -125,10 +143,10 @@ struct PanelView: View {
         }
     }
 
-    /// 单服务行：状态点 / 显示名 / 类型 / 端口 / 运行时长 / 打开。
+    /// 单服务行：状态点 / 显示名 / 托管标签 / 类型 / 端口 / 运行时长 / 动作区。
     private func serviceRow(_ row: PanelRow, indented: Bool) -> some View {
         HStack(spacing: 6) {
-            // 状态点：实心绿 = 监听中；空心灰 = 挂掉（已停止实例，托管定义落地后出现）。
+            // 状态点：实心绿 = 监听中；空心灰 = 挂掉（托管·已停止，工单 05 起）。
             Image(systemName: row.isUp ? "circle.fill" : "circle")
                 .font(.system(size: 8))
                 .foregroundStyle(row.isUp ? Color.green : Color.gray)
@@ -139,6 +157,12 @@ struct PanelView: View {
                 .font(.callout)
                 .lineLimit(1)
                 .help(row.displayName)
+            if row.isManaged {
+                Text("托管")
+                    .font(.caption2)
+                    .foregroundStyle(.teal)
+                    .help("有服务定义：停止/重启/日志全量可用")
+            }
             Text(row.typeLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -154,19 +178,81 @@ struct PanelView: View {
                     .foregroundStyle(.secondary)
                     .help("运行时长（取自进程启动时间）")
             }
-            // 「打开」：浏览器直达 http://localhost:{port}（spec §5）——UI 层一行胶水。
-            if let url = row.openURL {
-                Button {
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    Image(systemName: "arrow.up.forward")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("在默认浏览器打开 http://localhost:\(row.primaryPort ?? 0)")
-            }
+            actions(row)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 2)
+    }
+
+    /// 行尾动作区（工单 05）：托管行全量动作（启动/停止/重启/日志/编辑/打开）；
+    /// 外部行降级形态（spec §4）——灰置按钮 + 「收编」入口。聚合父行无动作（明细行有）。
+    @ViewBuilder
+    private func actions(_ row: PanelRow) -> some View {
+        if row.isManaged {
+            if row.isUp {
+                iconButton("stop.fill", "停止") {
+                    if let id = row.definitionID { Task { await model.stopService(id) } }
+                }
+                iconButton("arrow.clockwise", "重启") {
+                    if let id = row.definitionID { Task { await model.restartService(id) } }
+                }
+                iconButton("doc.text", "日志（工单 07 接入）") {
+                    if let id = row.definitionID { model.openLog(id) }
+                }
+            } else {
+                iconButton("play.fill", "启动") {
+                    if let id = row.definitionID { Task { await model.startService(id) } }
+                }
+            }
+            iconButton("pencil", "改名 / 路径前缀") {
+                editDraft = EditDraft(from: row)
+            }
+            if row.isUp, let url = row.openURL {
+                openButton(url, port: row.primaryPort ?? 0)
+            }
+        } else if !row.isAggregated {
+            // 外部服务降级形态：灰置（能力以定义为准，收编后解锁）+「收编」入口。
+            iconButton("stop.fill", "外部服务：收编后可用") {}
+                .disabled(true)
+            iconButton("arrow.clockwise", "外部服务：收编后可用") {}
+                .disabled(true)
+            iconButton("doc.text", "外部服务：收编后可用") {}
+                .disabled(true)
+            Button("收编") {
+                adoptDraft = AdoptDraft(from: row)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .disabled(row.commandLine == nil)
+            .help(row.commandLine == nil
+                  ? "扫描受限：未取得启动命令，暂无法收编"
+                  : "补记启动命令，升级为托管服务")
+        }
+    }
+
+    /// 图标小按钮（plain 风格，悬停提示）。
+    private func iconButton(
+        _ systemImage: String, _ help: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 14)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(help)
+    }
+
+    /// 「打开」：浏览器直达 http://localhost:{port}{路径前缀}（spec §5）。
+    private func openButton(_ url: URL, port: Int) -> some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            Image(systemName: "arrow.up.forward")
+                .frame(width: 14)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("在默认浏览器打开 http://localhost:\(port)\(url.path)")
     }
 }

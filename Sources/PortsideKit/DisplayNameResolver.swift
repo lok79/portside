@@ -1,13 +1,13 @@
 import Foundation
 
 /// 显示名解析（spec §1 优先级）：**用户别名 > 清洗后的识别名 > 未知 + 端口**。
-/// 别名的持久化载体是服务定义（工单 05）——本票先用注入的别名查询闭包占位：
-/// 工单 05 落地时按「端口 + 启动命令」匹配服务定义返回别名即可，本接口不动。
+/// 别名的持久化载体是服务定义——工单 05 起生产注入 `ServiceDefinitionCenter.alias`
+/// （按「端口 + 启动命令」匹配定义返回别名），本接口不动。
 public struct DisplayNameResolver: Sendable {
     /// 别名查询：入参服务实例（进程事实齐全，供匹配用），出参用户设置的别名（无则 nil）。
     public typealias AliasLookup = @Sendable (_ service: ListeningService) -> String?
 
-    /// 默认无别名（工单 05 接入持久化前的空实现）。
+    /// 无别名（工单 05 接入持久化前的空实现，测试基线仍可用）。
     public static let noAliases: AliasLookup = { _ in nil }
 
     public let aliasLookup: AliasLookup

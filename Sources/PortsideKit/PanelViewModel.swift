@@ -1,10 +1,13 @@
 import Foundation
 
-/// 面板 ViewModel（工单 04）：把 RefreshScheduler 驱动的 CompositeScanner → 识别 →
-/// 分区 串成一条 @MainActor 管线（GLOSSARY：面板/扫描器）。
+/// 面板 ViewModel（工单 04 起，工单 05 扩展定义接线）：把 RefreshScheduler 驱动的
+/// CompositeScanner → 识别 → 分区 串成一条 @MainActor 管线（GLOSSARY：面板/扫描器）。
 /// - 服务上下线自动反映：每轮 tick 全量重扫重算后发布，无手动刷新按钮（spec 用户故事 1）。
 /// - 「隐藏其他」经注入的 KeyValueStore 持久化；隐藏/折叠只影响渲染，模型层数据不丢。
 /// - 菜单栏汇总态每轮随扫描重算（GLOSSARY：菜单栏图标；注入 knownDefinitions 可测）。
+/// - 服务定义（工单 05）：收编/编辑后从最近一次扫描结果**免扫描重算**（立即反映，
+///   不等下一轮 tick）；有定义无匹配实例 → 托管·已停止行（「我的服务」区，带启动动作）；
+///   匹配 = 端口 + 规范化启动命令（DefinitionMatcher，工单 08 认领复用）。
 /// - 低资源：面板可见才记录活动（活动档 5s），隐藏后退避（空闲档 30s/120s）；
 ///   UI 不做每秒重算，行内文案只在扫描轮更新。
 @MainActor
@@ -35,10 +38,16 @@ public final class PanelViewModel: ObservableObject {
     private let assigner: SectionAssigner
     private let knownDefinitions: @Sendable () -> [KnownServiceDefinition]
     private let uptimeFetcher: ProcessUptimeFetcher?
+    /// 服务定义中枢（工单 05）：已停止定义行来源 + 收编/编辑/动作入口；nil = 无定义形态（工单 04）。
+    private let definitions: ServiceDefinitionCenter?
+    /// 进程控制接缝（工单 06 实装）：托管动作送达处；nil = 桩（动作不产生效果）。
+    private let processController: ProcessController?
     private let store: KeyValueStore
     private let refreshMode: RefreshMode
     private let clock: PortsideClock
     private let idleThreshold: Duration
+    /// 最近一次成功扫描结果：定义变更时免扫描重算（低资源：改名/收编不触发新一轮 lsof）。
+    private var lastScan: ScanResult?
     /// lazy：创建时才捕获 self（初始化完成后），避免 init 两阶段限制。
     private lazy var scheduler = RefreshScheduler(
         mode: refreshMode, clock: clock, idleThreshold: idleThreshold
@@ -59,6 +68,8 @@ public final class PanelViewModel: ObservableObject {
         assigner: SectionAssigner = SectionAssigner(),
         knownDefinitions: @escaping @Sendable () -> [KnownServiceDefinition] = { [] },
         uptimeFetcher: ProcessUptimeFetcher? = nil,
+        definitions: ServiceDefinitionCenter? = nil,
+        processController: ProcessController? = nil,
         store: KeyValueStore,
         clock: PortsideClock = SystemClock(),
         refreshMode: RefreshMode = RefreshMode.defaultMode,
@@ -70,6 +81,8 @@ public final class PanelViewModel: ObservableObject {
         self.assigner = assigner
         self.knownDefinitions = knownDefinitions
         self.uptimeFetcher = uptimeFetcher
+        self.definitions = definitions
+        self.processController = processController
         self.store = store
         self.refreshMode = refreshMode
         self.clock = clock
@@ -77,13 +90,21 @@ public final class PanelViewModel: ObservableObject {
         self.isOtherHidden = store.bool(forKey: Self.hideOtherKey)
     }
 
-    /// 生产装配：真实扫描器 + 识别引擎 + ps 运行时长采集 + UserDefaults 偏好。
+    /// 生产装配：真实扫描器 + 识别引擎 + ps 运行时长采集 + UserDefaults 偏好 +
+    /// 服务定义中枢（JSON 落盘应用容器）。进程控制真实现归工单 06，此处暂不注入。
     public static func production() -> PanelViewModel {
         let runner = SystemProcessRunner()
+        let definitions = ServiceDefinitionCenter(
+            store: DefinitionStore(directory: DefinitionStore.defaultDirectory())
+        )
         return PanelViewModel(
             scanner: CompositeScanner(runner: runner),
             engine: .defaultEngine(runner: runner),
+            resolver: DisplayNameResolver(aliasLookup: { definitions.alias(for: $0) }),
+            assigner: SectionAssigner(hasDefinition: { definitions.hasDefinition(for: $0) }),
+            knownDefinitions: { definitions.knownDefinitions() },
             uptimeFetcher: ProcessUptimeFetcher(runner: runner),
+            definitions: definitions,
             store: UserDefaultsStore()
         )
     }
@@ -149,17 +170,35 @@ public final class PanelViewModel: ObservableObject {
             scanNotice = "扫描失败，显示的是上一次结果：\(String(describing: error))"
             return
         }
+        lastScan = result
+        await recompute(from: result)
+    }
 
+    /// 从既有扫描结果重算整条管线（识别 → 分区 → 行 → 汇总态），不触发新扫描。
+    /// 扫描轮与定义变更轮（收编/编辑，工单 05）共用，保证「定义变更 → 面板立即重算」。
+    private func recompute(from result: ScanResult) async {
         let identified = await engine.identifyAll(result.services, resolver: resolver)
         let uptimes = await uptimeFetcher?.fetch(pids: identified.compactMap { $0.service.pid }) ?? [:]
         let grouping = assigner.group(identified)
 
         var rows: [PanelRow] = []
+        var matchedDefinitionIDs = Set<String>()
         rows.reserveCapacity(identified.count)
         for section in ServiceSectionKind.allCases {
             let services = grouping[section] ?? []
             if section == .other {
                 rows += PanelRowFactory.aggregatedRows(from: services, uptimes: uptimes)
+            } else if section == .mine {
+                for service in services {
+                    // 托管·运行中：匹配到的定义提供托管标记/路径前缀/动作路由 id。
+                    let definition = definitions?.matchedDefinition(for: service.service)
+                    if let definition { matchedDefinitionIDs.insert(definition.id) }
+                    rows.append(PanelRowFactory.leafRow(
+                        for: service, section: .mine,
+                        uptimeText: service.service.pid.flatMap { uptimes[$0] }.map(UptimeText.format),
+                        definition: definition
+                    ))
+                }
             } else {
                 rows += services.map { service in
                     PanelRowFactory.leafRow(
@@ -168,6 +207,16 @@ public final class PanelViewModel: ObservableObject {
                     )
                 }
             }
+        }
+
+        // 托管·已停止（工单 05）：有定义无匹配实例 → 「我的服务」区补行（启动按钮），
+        // 端口升序、同端口按创建序。运行中的定义不重复出停止行。
+        if let definitions {
+            let stopped = definitions.all()
+                .filter { !matchedDefinitionIDs.contains($0.id) }
+                .sorted { ($0.port, $0.createdAt.timeIntervalSince1970) <
+                    ($1.port, $1.createdAt.timeIntervalSince1970) }
+            rows += stopped.map(PanelRowFactory.stoppedRow)
         }
 
         allRows = rows
@@ -179,5 +228,54 @@ public final class PanelViewModel: ObservableObject {
             knownServices: knownDefinitions(),
             listeningPorts: Set(result.services.map(\.port))
         )
+    }
+
+    // MARK: - 服务定义（收编/编辑，工单 05）
+
+    /// 收编：生成定义并立即重算面板（不等下一轮扫描）。取消收编 = 不调用本方法，无副作用。
+    /// - Returns: 生效后的定义 id（UI 关联用）。
+    @discardableResult
+    public func adoptService(
+        name: String, commandLine: String, port: Int, pathPrefix: String
+    ) async -> String? {
+        guard let definitions else { return nil }
+        let id = definitions.adopt(
+            name: name, commandLine: commandLine, port: port, pathPrefix: pathPrefix
+        ).id
+        await recompute(from: lastScan ?? ScanResult(services: [], source: .lsof))
+        return id
+    }
+
+    /// 编辑定义（名称即别名、路径前缀）并立即重算面板。
+    public func editDefinition(id: String, name: String, pathPrefix: String) async {
+        guard let definitions else { return }
+        definitions.edit(id: id, name: name, pathPrefix: pathPrefix)
+        await recompute(from: lastScan ?? ScanResult(services: [], source: .lsof))
+    }
+
+    // MARK: - 托管动作（工单 05 只送达接缝；进程控制真实现归工单 06，日志管道归 07）
+
+    /// 「启动」已停止的托管服务。
+    public func startService(_ definitionID: String) async {
+        guard let definition = definitions?.definition(id: definitionID) else { return }
+        try? await processController?.start(definition)
+    }
+
+    /// 停止托管服务。
+    public func stopService(_ definitionID: String) async {
+        guard let definition = definitions?.definition(id: definitionID) else { return }
+        try? await processController?.stop(definition)
+    }
+
+    /// 重启托管服务。
+    public func restartService(_ definitionID: String) async {
+        guard let definition = definitions?.definition(id: definitionID) else { return }
+        try? await processController?.restart(definition)
+    }
+
+    /// 查看托管服务日志（工单 07 接入日志管道前的桩：动作就位，暂无日志视图可开）。
+    public func openLog(_ definitionID: String) {
+        guard definitions?.definition(id: definitionID) != nil else { return }
+        // 工单 07：切日志视图 + tail。本票仅守卫定义存在性。
     }
 }

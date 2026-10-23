@@ -1,7 +1,7 @@
 import Foundation
 
-/// 已知服务（GLOSSARY：服务定义）：汇总态判定的输入。工单 05 落地持久化定义之前，
-/// 生产注入恒为空集合（PanelViewModel 默认值），测试注入任意集合。
+/// 已知服务（GLOSSARY：服务定义）：汇总态判定的输入。工单 05 起生产由
+/// `ServiceDefinitionCenter.knownDefinitions()` 提供（真实持久化定义），测试注入任意集合。
 public struct KnownServiceDefinition: Sendable, Equatable {
     /// 定义的服务名（显示用与诊断用；汇总态判定只看端口）。
     public let name: String

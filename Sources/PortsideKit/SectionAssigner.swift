@@ -1,18 +1,18 @@
 import Foundation
 
 /// 服务定义查询接缝（GLOSSARY：服务定义——收编产生的持久配置）。
-/// 入参运行中实例的进程事实（端口、命令行，供工单 05 按「端口 + 启动命令」匹配），
-/// 出参该实例是否有服务定义。本票（04）定义集合为空——持久化与收编在工单 05 落地，
-/// 届时替换注入实现即可，本接口与分区逻辑零改动。
+/// 入参运行中实例的进程事实（端口、命令行，按「端口 + 启动命令」匹配），
+/// 出参该实例是否有服务定义。工单 05 起生产注入 `ServiceDefinitionCenter.hasDefinition`
+/// （DefinitionMatcher 实现）；测试注入任意闭包，本接口与分区逻辑零改动。
 public typealias DefinitionLookup = @Sendable (_ service: ListeningService) -> Bool
 
 /// 分区归属器（spec §2 四区规则）：IdentifiedService → ServiceSectionKind。
-/// - 我的服务：有服务定义的（含将来的已停止实例，spec §2）。
+/// - 我的服务：有服务定义的（含已停止实例，spec §2）。
 /// - 后端：识别为 Java、尚未收编的。
 /// - 前端：识别为 dev server 的。
 /// - 其他：未识别的（含类型开放值对照不上的，D-005——不写死栈集合）。
 public struct SectionAssigner: Sendable {
-    /// 工单 05 之前的空实现：没有任何服务有定义。
+    /// 空定义集合（工单 04 兼容形态/测试基线）：没有任何服务有定义。
     public static let noDefinitions: DefinitionLookup = { _ in false }
 
     public let hasDefinition: DefinitionLookup
