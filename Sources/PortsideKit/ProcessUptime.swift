@@ -55,7 +55,7 @@ public struct ProcessUptimeFetcher: Sendable {
 
     /// 批量采集：pid → 运行时长。坏行/取不到的 pid 不入映射（调用方落 nil 留空）。
     public func fetch(pids: [Int]) async -> [Int: Duration] {
-        let sortedPids = Array(Set(pids)).sorted()
+        let sortedPids = PidList.normalized(pids)
         guard !sortedPids.isEmpty else { return [:] }
         let pidList = sortedPids.map(String.init).joined(separator: ",")
         guard let output = try? await runner.run(

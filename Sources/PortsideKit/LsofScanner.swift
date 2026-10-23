@@ -17,12 +17,7 @@ public final class LsofScanner: PortScanner {
     }
 
     public func scan() async throws -> ScanResult {
-        let output: ProcessOutput
-        do {
-            output = try await runner.run(launchPath: Self.lsofPath, arguments: Self.listenArguments)
-        } catch {
-            throw error
-        }
+        let output = try await runner.run(launchPath: Self.lsofPath, arguments: Self.listenArguments)
 
         var services = LsofParser.parse(output.stdout)
         // lsof exit 1 可伴随部分可用输出（部分文件无法检查），只在拿不到任何行时报失败。
@@ -36,7 +31,7 @@ public final class LsofScanner: PortScanner {
     /// 为服务补齐命令行与工作目录。采集不到就留 nil 显式标记，
     /// 绝不因补采失败丢弃服务。
     private func enrich(_ services: inout [ListeningService]) async {
-        let pids = Array(Set(services.compactMap(\.pid))).sorted()
+        let pids = PidList.normalized(services.compactMap(\.pid))
         guard !pids.isEmpty else { return }
         let details = await ProcessDetailFetcher(runner: runner).fetch(pids: pids)
         services = services.map(details.apply(to:))
@@ -50,13 +45,21 @@ public final class LsofScanner: PortScanner {
     }
 }
 
+/// pid 清单标准化（Kit 内部共用）：去重 + 升序——按 pid 批量子进程调用的统一入参口径
+/// （lsof 补采 / ps 命令行 / etime 各处共用，单一事实来源）。
+enum PidList {
+    static func normalized(_ pids: [Int]) -> [Int] {
+        Array(Set(pids)).sorted()
+    }
+}
+
 /// 按 pid 批量采集进程明细：命令行与工作目录各一次子进程调用（低资源硬约束）。
 /// 调用失败（工具不可用/受限）降级为空映射，由调用方落成 nil 显式标记。
 struct ProcessDetailFetcher {
     let runner: ProcessRunner
 
     func fetch(pids: [Int]) async -> ProcessDetails {
-        let sortedPids = Array(Set(pids)).sorted()
+        let sortedPids = PidList.normalized(pids)
         guard !sortedPids.isEmpty else { return ProcessDetails(commandLines: [:], workingDirectories: [:]) }
         let pidList = sortedPids.map(String.init).joined(separator: ",")
 

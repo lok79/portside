@@ -247,6 +247,11 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         return pgid > 0 ? pgid : nil
     }
 
+    /// 摘除一个追踪条目（按实例身份，非按 id——换代场景 id 相同条目已换）。
+    private func removeEntry(_ entry: ProcessEntry) {
+        lock.withLock { entries = entries.filter { $0.value !== entry } }
+    }
+
     // MARK: - 启动
 
     public func start(_ definition: ServiceDefinition) async throws {
@@ -320,7 +325,7 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         let group = entry.pgid
         // 安全阀：自己的进程组永不被信号（防御：注册表被污染时不自杀）。
         guard group != getpgrp() else {
-            lock.withLock { entries = entries.filter { $0.value !== entry } }
+            removeEntry(entry)
             return
         }
         kill(-group, SIGTERM)
@@ -328,13 +333,13 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         // 宽限期：领袖退出信号与注入时钟竞速（先到先赢；无轮询忙等）。
         let exited = await raceExit(pid: entry.pid, timeout: gracePeriod)
         if exited && !Self.groupAlive(group) {
-            lock.withLock { entries = entries.filter { $0.value !== entry } }
+            removeEntry(entry)
             return
         }
         // 宽限到仍有存活（或领袖退了但组里还有残余）→ SIGKILL 补刀整组。
         kill(-group, SIGKILL)
         _ = await raceExit(pid: entry.pid, timeout: killTimeout)
-        lock.withLock { entries = entries.filter { $0.value !== entry } }
+        removeEntry(entry)
     }
 
     /// 端口兜底停止：lsof 找占用定义端口的 pid，逐个 TERM → 宽限 → KILL（尽力而为）。
