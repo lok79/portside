@@ -40,6 +40,7 @@ PORTSIDE_SMOKE=1 swift test --filter ScannerSmokeTests   # 另加：本机实扫
 - 未签名、未公证、未打包 .app——`swift run` 裸可执行，自用形态；首次运行 macOS 可能拦一次。
 - 无开机自启。
 - 外部服务的日志是尽力发现：进程的 stdout 在它启动那一刻就流向了别处，Portside 只能找落盘文件；真 PTY（交互 stdin，flutter/expo 场景）不支持。
+- 包装命令的服务定义（如收编 `npm run dev`，实际监听者是 node/vite）在端口兜底停止路径受限：杀前命令校验宁漏杀不误杀，会拒绝停止并明示；Portside 亲生启动/重启不受影响（v1.x 候选：进程树归因兜底）。
 - 零网络、零遥测、零第三方依赖——它不往外发任何东西，以后引入遥测也必须默认关闭且明示。
 
 ## v1.x 路线（候选池，未拍板）
