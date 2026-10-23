@@ -29,6 +29,12 @@ public final class PanelViewModel: ObservableObject {
     @Published public private(set) var pendingConfirmation: ManagedActionConfirmation?
     /// 托管行内状态（工单 06：启动失败错误可见不装死；定义 id → 文案）。
     @Published public private(set) var managedStatusMessages: [String: String] = [:]
+    /// 日志流上下文（工单 07）：非 nil = 日志视图激活（同窗切换，形态 A）。
+    @Published public private(set) var logContext: LogContext?
+    /// 日志流状态（ locating → found/notFound；logText 持增量内容）。
+    @Published public private(set) var logStatus: LogStreamStatus = .locating
+    /// 日志文本（tail 增量累积，超容量保尾部截断）。
+    @Published public private(set) var logText = ""
     /// 「隐藏其他」开关：读经持久层，写穿持久层。
     @Published public var isOtherHidden: Bool {
         didSet { store.set(isOtherHidden, forKey: Self.hideOtherKey) }
@@ -46,12 +52,26 @@ public final class PanelViewModel: ObservableObject {
     private let definitions: ServiceDefinitionCenter?
     /// 进程控制接缝（工单 06 实装）：托管动作送达处；nil = 桩（动作不产生效果）。
     private let processController: ProcessController?
+    /// 日志定位接缝（工单 07）：发现链入口；nil = 日志视图不可用（动作无效果）。
+    private let logLocator: LogLocating?
+    /// 日志尾随工厂（工单 07）：可注入假实现验证 stop 纪律。
+    private let logTailFactory: LogTailFactory
     private let store: KeyValueStore
     private let refreshMode: RefreshMode
     private let clock: PortsideClock
     private let idleThreshold: Duration
     /// 最近一次成功扫描结果：定义变更时免扫描重算（低资源：改名/收编不触发新一轮 lsof）。
     private var lastScan: ScanResult?
+    /// 当前活跃 tail（同一时刻最多一个：新开必先停旧，工单资源安全要求）。
+    private var activeTail: LogTailing?
+    /// 日志会代号：返回/切换/隐藏即自增，过期发现结果按代号丢弃（防孤儿 tail）。
+    private var logGeneration = 0
+    /// 日志文本容量上限（低内存：超容量保尾部截断；~200KB 文本对滚动视图足够）。
+    private static let logTextCapacity = 200_000
+    /// 生产默认尾随工厂：0.5s 轮询（新写入 <1s 可见，工单验收）。
+    private static let defaultLogTailFactory: LogTailFactory = { url, onUpdate in
+        LogTail(url: url, clock: SystemClock(), onUpdate: onUpdate)
+    }
     /// lazy：创建时才捕获 self（初始化完成后），避免 init 两阶段限制。
     private lazy var scheduler = RefreshScheduler(
         mode: refreshMode, clock: clock, idleThreshold: idleThreshold
@@ -77,7 +97,9 @@ public final class PanelViewModel: ObservableObject {
         store: KeyValueStore,
         clock: PortsideClock = SystemClock(),
         refreshMode: RefreshMode = RefreshMode.defaultMode,
-        idleThreshold: Duration = .seconds(120)
+        idleThreshold: Duration = .seconds(120),
+        logLocator: LogLocating? = nil,
+        logTailFactory: LogTailFactory? = nil
     ) {
         self.scanner = scanner
         self.engine = engine
@@ -87,6 +109,8 @@ public final class PanelViewModel: ObservableObject {
         self.uptimeFetcher = uptimeFetcher
         self.definitions = definitions
         self.processController = processController
+        self.logLocator = logLocator
+        self.logTailFactory = logTailFactory ?? Self.defaultLogTailFactory
         self.store = store
         self.refreshMode = refreshMode
         self.clock = clock
@@ -95,8 +119,8 @@ public final class PanelViewModel: ObservableObject {
     }
 
     /// 生产装配：真实扫描器 + 识别引擎 + ps 运行时长采集 + UserDefaults 偏好 +
-    /// 服务定义中枢（JSON 落盘应用容器）+ 进程控制真实现（工单 06：登录 shell +
-    /// 独立进程组 + 落盘日志，日志目录 `~/Library/Application Support/Portside/logs/`）。
+    /// 服务定义中枢（JSON 落盘应用容器）+ 进程控制真实现（工单 06）+
+    /// 日志管道真实现（工单 07：lsof 发现链 + 落盘目录 + 0.5s 轮询 tail）。
     public static func production() -> PanelViewModel {
         let runner = SystemProcessRunner()
         let definitions = ServiceDefinitionCenter(
@@ -115,7 +139,10 @@ public final class PanelViewModel: ObservableObject {
             uptimeFetcher: ProcessUptimeFetcher(runner: runner),
             definitions: definitions,
             processController: processController,
-            store: UserDefaultsStore()
+            store: UserDefaultsStore(),
+            logLocator: LogLocator.production(
+                managedLogsDirectory: ShellProcessController.defaultLogsDirectory()
+            )
         )
     }
 
@@ -140,8 +167,11 @@ public final class PanelViewModel: ObservableObject {
         scheduler.recordActivity()
     }
 
-    /// 面板隐藏：不记录活动 → 空闲退避（低资源：隐藏时不加速刷新）。
-    public func panelDidDisappear() {}
+    /// 面板隐藏：不记录活动 → 空闲退避（低资源：隐藏时不加速刷新）；
+    /// 同时停掉日志 tail 并退出日志视图（工单 07：面板隐藏即停，重开回列表）。
+    public func panelDidDisappear() {
+        closeLog()
+    }
 
     // MARK: - 行查询（渲染用）
 
@@ -330,12 +360,103 @@ public final class PanelViewModel: ObservableObject {
         managedStatusMessages[id]
     }
 
-    /// 查看托管服务日志（工单 07 接入日志管道前的桩：动作就位，暂无日志视图可开）。
-    public func openLog(_ definitionID: String) {
-        guard definitions?.definition(id: definitionID) != nil else { return }
-        // 工单 07：切日志视图 + tail。本票仅守卫定义存在性。
+    // MARK: - 日志流（工单 07，spec §6：托管与外部统一"发现文件 → tail"）
+
+    /// 点服务行 → 同窗切到日志视图（形态 A）：先停旧 tail（切服务/重复点击），
+    /// 再走发现链定位日志文件；命中即启动 tail（回填末尾 500 行 + 跟随），
+    /// 未发现则明示文案（不装死）。发现是异步的：返回/切换后过期结果按代号丢弃。
+    public func openLog(rowID: String) {
+        guard let row = findRow(id: rowID), let logLocator else { return }
+        stopActiveTail()
+        logGeneration += 1
+        let generation = logGeneration
+        let context = LogContext(
+            serviceName: row.displayName,
+            port: row.primaryPort,
+            isManaged: row.isManaged,
+            definitionID: row.definitionID,
+            pid: row.pid,
+            workingDirectory: row.workingDirectory
+        )
+        logContext = context
+        logText = ""
+        logStatus = .locating
+        Task { @MainActor [weak self, logLocator] in
+            guard let self else { return }
+            let availability = await logLocator.locate(context)
+            // 用户可能已返回/切换：此刻上下文已变 → 过期结果直接丢弃（防孤儿 tail）。
+            guard generation == self.logGeneration, self.logContext == context else { return }
+            switch availability {
+            case .available(let url):
+                let tail = self.logTailFactory(url) { [weak self] chunk in
+                    // 增量从轮询任务线程到达：回主 actor 落 published 状态。
+                    Task { @MainActor [weak self] in
+                        self?.appendLogText(chunk)
+                    }
+                }
+                self.activeTail = tail
+                tail.start()
+                self.logStatus = .found
+            case .notFound:
+                self.logStatus = .notFound(LogLocator.externalLogNotFoundNotice)
+            }
+        }
+    }
+
+    /// 返回列表：停 tail、清日志视图（确认状态机同款纪律：状态与资源一并回收）。
+    public func closeLog() {
+        logGeneration += 1
+        stopActiveTail()
+        logContext = nil
+        logText = ""
+        logStatus = .locating
+    }
+
+    /// 日志视图当前是否激活（UI 同窗切换依据）。
+    public var isLogViewActive: Bool { logContext != nil }
+
+    private func stopActiveTail() {
+        activeTail?.stop()
+        activeTail = nil
+    }
+
+    /// tail 行增量落地：追加并保尾部截断（超容量丢头部，低内存硬约束）。
+    private func appendLogText(_ chunk: String) {
+        logText = Self.trimmedLogText(logText + chunk, capacity: Self.logTextCapacity)
+    }
+
+    /// 截断规则（纯函数）：超容量时保尾部、截点对齐行首（视图不出现半行开头）。
+    static func trimmedLogText(_ text: String, capacity: Int) -> String {
+        guard text.count > capacity else { return text }
+        var trimmed = String(text.suffix(capacity))
+        if let firstNewline = trimmed.firstIndex(of: "\n") {
+            trimmed = String(trimmed[trimmed.index(after: firstNewline)...])
+        }
+        return trimmed
+    }
+
+    /// 在行模型（含聚合明细）里按行 id 查找。
+    private func findRow(id: String) -> PanelRow? {
+        for row in allRows {
+            if row.id == id { return row }
+            if let child = row.children.first(where: { $0.id == id }) { return child }
+        }
+        return nil
     }
 }
+
+/// 日志流状态（工单 07）：locating = 发现中/等待回填；found = tail 跟随中（logText 有内容）；
+/// notFound = 未发现日志文件（附明示文案，UI 明示行，不装死）。
+public enum LogStreamStatus: Equatable, Sendable {
+    case locating
+    case found
+    case notFound(String)
+}
+
+/// 日志尾随工厂：URL + 增量回调 → tail 实例（可注入假实现验证 stop 纪律）。
+public typealias LogTailFactory = @Sendable (
+    _ url: URL, _ onUpdate: @escaping @Sendable (String) -> Void
+) -> LogTailing
 
 /// 危险动作确认载荷（工单 06，spec §4：停止/重启前显示服务名/端口/解释并二次确认）。
 /// 纯数据，UI 据此渲染弹窗；确认/取消走 ViewModel 状态机（可测：确认前不杀、确认后才杀）。

@@ -27,10 +27,36 @@ public struct PanelRow: Identifiable, Equatable, Sendable {
     public let uptimeText: String?
     /// 进程命令行原文（argv 原样，收编弹窗预填依据）；采集不到为 nil，不猜。
     public let commandLine: String?
+    /// 进程 id（工单 07 外部日志发现链输入）；降级数据源拿不到为 nil，不猜。
+    public let pid: Int?
+    /// 工作目录（工单 07 目录兜底发现输入）；采集不到为 nil，不猜。
+    public let workingDirectory: String?
     /// 浏览器打开的路径前缀（spec §5，已规范化，如 `/swagger-ui`；外部行空）。
     public let pathPrefix: String
     /// 聚合行的展开明细（单服务行为空）。
     public let children: [PanelRow]
+
+    public init(
+        id: String, section: ServiceSectionKind, isUp: Bool, isManaged: Bool,
+        definitionID: String?, displayName: String, typeLabel: String, ports: [Int],
+        uptimeText: String?, commandLine: String?, pid: Int? = nil,
+        workingDirectory: String? = nil, pathPrefix: String, children: [PanelRow]
+    ) {
+        self.id = id
+        self.section = section
+        self.isUp = isUp
+        self.isManaged = isManaged
+        self.definitionID = definitionID
+        self.displayName = displayName
+        self.typeLabel = typeLabel
+        self.ports = ports
+        self.uptimeText = uptimeText
+        self.commandLine = commandLine
+        self.pid = pid
+        self.workingDirectory = workingDirectory
+        self.pathPrefix = pathPrefix
+        self.children = children
+    }
 
     public var isAggregated: Bool { !children.isEmpty }
     /// 行的主端口（聚合行取最小端口；无端口行不存在——扫描行必有端口）。
@@ -61,6 +87,8 @@ public enum PanelRowFactory {
             ports: [service.service.port],
             uptimeText: uptimeText,
             commandLine: service.service.commandLine,
+            pid: service.service.pid,
+            workingDirectory: service.service.workingDirectory,
             pathPrefix: definition?.pathPrefix ?? "",
             children: []
         )

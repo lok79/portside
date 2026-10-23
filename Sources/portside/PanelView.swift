@@ -14,6 +14,54 @@ struct PanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let context = model.logContext {
+                // 日志视图（工单 07，形态 A）：与列表同窗切换，无独立浮动小窗。
+                LogStreamView(
+                    context: context,
+                    status: model.logStatus,
+                    text: model.logText
+                ) {
+                    model.closeLog()
+                }
+            } else {
+                listContent
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 收编 / 编辑弹窗（工单 05）：保存走 ViewModel（立即重算），取消仅关弹窗。
+        .sheet(item: $adoptDraft) { draft in
+            AdoptSheet(draft: draft) { name, command, port, prefix in
+                Task { await model.adoptService(
+                    name: name, commandLine: command, port: port, pathPrefix: prefix
+                ) }
+            }
+        }
+        .sheet(item: $editDraft) { draft in
+            EditSheet(draft: draft) { name, prefix in
+                Task { await model.editDefinition(id: draft.id, name: name, pathPrefix: prefix) }
+            }
+        }
+        // 危险动作确认弹窗（工单 06）：binding 派生自 ViewModel 状态——
+        // 关弹窗（Esc/点外面）= binding 置 nil = 取消，不杀；确认按钮显式送达。
+        .sheet(item: Binding(
+            get: { model.pendingConfirmation },
+            set: { newValue in
+                if newValue == nil { model.cancelPendingManagedAction() }
+            }
+        )) { confirmation in
+            ManagedActionSheet(confirmation: confirmation) {
+                Task { await model.confirmPendingManagedAction() }
+            }
+        }
+        // 面板可见性 ↔ 刷新活动：可见时记录活动（活动档快刷），隐藏后自然退避（低资源）。
+        // 隐藏同时经 model.panelDidDisappear() 停日志 tail（工单 07：面板隐藏即停）。
+        .onAppear { model.panelDidAppear() }
+        .onDisappear { model.panelDidDisappear() }
+    }
+
+    /// 列表形态（日志视图关闭时的主内容）：partial 明示 + 四区列表 + 底栏。
+    private var listContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
             if let notice = model.scanNotice {
                 // spec §1：清单可能不完整时 UI 明示（列表顶部一行）。
                 HStack(spacing: 6) {
@@ -56,35 +104,6 @@ struct PanelView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // 收编 / 编辑弹窗（工单 05）：保存走 ViewModel（立即重算），取消仅关弹窗。
-        .sheet(item: $adoptDraft) { draft in
-            AdoptSheet(draft: draft) { name, command, port, prefix in
-                Task { await model.adoptService(
-                    name: name, commandLine: command, port: port, pathPrefix: prefix
-                ) }
-            }
-        }
-        .sheet(item: $editDraft) { draft in
-            EditSheet(draft: draft) { name, prefix in
-                Task { await model.editDefinition(id: draft.id, name: name, pathPrefix: prefix) }
-            }
-        }
-        // 危险动作确认弹窗（工单 06）：binding 派生自 ViewModel 状态——
-        // 关弹窗（Esc/点外面）= binding 置 nil = 取消，不杀；确认按钮显式送达。
-        .sheet(item: Binding(
-            get: { model.pendingConfirmation },
-            set: { newValue in
-                if newValue == nil { model.cancelPendingManagedAction() }
-            }
-        )) { confirmation in
-            ManagedActionSheet(confirmation: confirmation) {
-                Task { await model.confirmPendingManagedAction() }
-            }
-        }
-        // 面板可见性 ↔ 刷新活动：可见时记录活动（活动档快刷），隐藏后自然退避（低资源）。
-        .onAppear { model.panelDidAppear() }
-        .onDisappear { model.panelDidDisappear() }
     }
 
     /// 一个分区：标题行（名称 + 行数）+ 行列表或空状态文案。
@@ -157,6 +176,7 @@ struct PanelView: View {
 
     /// 单服务行：状态点 / 显示名 / 托管标签 / 类型 / 端口 / 运行时长 / 动作区
     /// （+ 行内状态：启动失败等错误信息，工单 06——可见不装死）。
+    /// 点行任意空白处 = 切日志视图（工单 07：点任意服务行看日志，托管与外部统一）。
     private func serviceRow(_ row: PanelRow, indented: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
@@ -196,6 +216,11 @@ struct PanelView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                model.openLog(rowID: row.id)
+            }
+            .help("点按查看日志流")
             if let id = row.definitionID, let message = model.statusMessage(forDefinitionID: id) {
                 Text(message)
                     .font(.caption)
@@ -209,8 +234,9 @@ struct PanelView: View {
         }
     }
 
-    /// 行尾动作区（工单 05/06）：托管行全量动作——停止/重启经确认流（工单 06，
-    /// 确认前不杀）；启动直达。外部行降级形态（spec §4）——灰置按钮 + 「收编」入口。
+    /// 行尾动作区（工单 05/06/07）：托管行全量动作——停止/重启经确认流（工单 06，
+    /// 确认前不杀）；启动直达；日志 = 同窗日志视图（工单 07）。外部行降级形态
+    /// （spec §4）——停止/重启灰置 + 「收编」入口；日志尽力而为（发现链，工单 07）。
     @ViewBuilder
     private func actions(_ row: PanelRow) -> some View {
         if row.isManaged {
@@ -221,13 +247,13 @@ struct PanelView: View {
                 iconButton("arrow.clockwise", "重启") {
                     if let id = row.definitionID { model.requestRestartService(id) }
                 }
-                iconButton("doc.text", "日志（工单 07 接入）") {
-                    if let id = row.definitionID { model.openLog(id) }
-                }
             } else {
                 iconButton("play.fill", "启动") {
                     if let id = row.definitionID { Task { await model.startService(id) } }
                 }
+            }
+            iconButton("doc.text", "日志流") {
+                model.openLog(rowID: row.id)
             }
             iconButton("pencil", "改名 / 路径前缀") {
                 editDraft = EditDraft(from: row)
@@ -236,13 +262,15 @@ struct PanelView: View {
                 openButton(url, port: row.primaryPort ?? 0)
             }
         } else if !row.isAggregated {
-            // 外部服务降级形态：灰置（能力以定义为准，收编后解锁）+「收编」入口。
+            // 外部服务降级形态：停止/重启灰置（能力以定义为准，收编后解锁）+
+            // 日志（尽力发现）+「收编」入口。
             iconButton("stop.fill", "外部服务：收编后可用") {}
                 .disabled(true)
             iconButton("arrow.clockwise", "外部服务：收编后可用") {}
                 .disabled(true)
-            iconButton("doc.text", "外部服务：收编后可用") {}
-                .disabled(true)
+            iconButton("doc.text", "日志流（尽力发现）") {
+                model.openLog(rowID: row.id)
+            }
             Button("收编") {
                 adoptDraft = AdoptDraft(from: row)
             }
