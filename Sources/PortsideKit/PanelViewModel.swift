@@ -92,12 +92,18 @@ public final class PanelViewModel: ObservableObject {
     /// 最近一轮探活结论（F2）：端口 → 结论；与扫描事实合并出汇总态与托管行状态。
     private var probeOutcomes: [Int: PortProbeOutcome] = [:]
     /// 周期探活器（F2）：lazy 装配（nil 探活边界 = nil 探活器）。
-    private lazy var probeLoop: PortProbe? = {
-        guard let prober else { return nil }
-        let known = self.knownDefinitions
+    /// 装配全程 [weak self]（评审收尾 G1）：VM 强持 probeLoop → PortProbe，PortProbe
+    /// 再持 ports/onOutcome 两个逃逸闭包——任一强捕 self 都成 VM↔PortProbe 环
+    /// （VM 永不释放、探活循环僵死常驻）。统一弱捕（onOutcome 原已 weak，ports 同改）：
+    /// VM 释放后 ports 落空清单（探活轮空转、零连接）、onOutcome 直达丢弃，不悬空。
+    /// ports 读穿而非拷贝 `knownDefinitions`：闭包值非类类型无法 [weak] 捕获，
+    /// 只能经弱 self 现取——VM 在则拿现行清单，VM 走则空清单，语义与拷贝等价
+    /// （knownDefinitions 是 let，永不换值）。生命周期由 ProbeWiringTests 钉住。
+    private lazy var probeLoop: PortProbe? = { [weak self] in
+        guard let self, let prober = self.prober else { return nil }
         let clock = self.clock
         return PortProbe(
-            ports: { known().map(\.port) },
+            ports: { [weak self] in (self?.knownDefinitions() ?? []).map(\.port) },
             prober: prober,
             clock: clock,
             onOutcome: { [weak self] port, outcome in

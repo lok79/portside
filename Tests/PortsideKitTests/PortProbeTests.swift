@@ -276,6 +276,38 @@ final class ProbeWiringTests: XCTestCase {
         model.stop()
     }
 
+    // MARK: - 生命周期（评审收尾 G1：探活装配闭包统一弱捕获，不成 VM↔PortProbe 环）
+
+    /// 探活装配闭包不得强捕 self：probeLoop 是 lazy 装配体，装配表达式里对 self
+    /// 的任何强捕获（含 ports 闭包）都会让 VM 在探活器未评估时就自我环持，放手不放。
+    func test探活装配闭包不强捕self未启动也放手即释() {
+        let clock = ManualClock()
+        let scanner = FakeScanner([.success(ScanResult(services: [], source: .lsof))])
+        var model: PanelViewModel? = makeWiredModel(
+            prober: ScriptedProber([]), scanner: scanner, clock: clock
+        ).0
+        weak var witness: PanelViewModel? = model
+        XCTAssertNotNil(witness, "前置：强持有还在，witness 有效")
+        model = nil
+        XCTAssertNil(witness, "探活装配闭包（lazy 装配体/ports）不得强捕 self：VM 放手即释放")
+    }
+
+    /// VM↔PortProbe 环防护甲：PortProbe 持有的逃逸闭包（ports/onOutcome）任一强捕
+    /// self 即成环，start/stop 全生命周期走完仍放不掉——此测试当场翻红。
+    func test启动停止后VM释放探活接线不环持() async throws {
+        let clock = ManualClock()
+        let scanner = FakeScanner([.success(ScanResult(services: [], source: .lsof))])
+        var model: PanelViewModel? = makeWiredModel(
+            prober: ScriptedProber([]), scanner: scanner, clock: clock
+        ).0
+        weak var witness: PanelViewModel? = model
+        model?.start()
+        model?.stop()
+        try? await Task.sleep(nanoseconds: 150_000_000)   // 在途回调（弱引用，不保活）落定
+        model = nil
+        XCTAssertNil(witness, "VM↔PortProbe 无环：start/stop 全生命周期后放手即释放")
+    }
+
     func test无探活器时零开销行为不变() async throws {
         let clock = ManualClock()
         let up = ScanResult(services: [
