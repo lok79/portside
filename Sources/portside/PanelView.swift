@@ -287,7 +287,7 @@ struct PanelView: View {
             }
         } else if !row.isAggregated {
             // 外部服务降级形态：停止/重启灰置（能力以定义为准，收编后解锁）+
-            // 日志（尽力发现）+「收编」入口。
+            // 日志（尽力发现）+「收编」入口 +「打开」（spec §5 浏览器打开不限托管）。
             iconButton("stop.fill", "外部服务：收编后可用") {}
                 .disabled(true)
             iconButton("arrow.clockwise", "外部服务：收编后可用") {}
@@ -304,6 +304,9 @@ struct PanelView: View {
             .help(row.commandLine == nil
                   ? "扫描受限：未取得启动命令，暂无法收编"
                   : "补记启动命令，升级为托管服务")
+            if let url = row.openURL {
+                openButton(url, port: row.primaryPort ?? 0)
+            }
         }
     }
 
