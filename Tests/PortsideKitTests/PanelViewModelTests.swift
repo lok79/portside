@@ -82,14 +82,17 @@ final class PanelViewModelTests: XCTestCase {
     }
 
     /// 轮询直到条件成立或超时（VM 的 refresh 在主 actor 异步落定，测试不猜时机）。
+    /// 有界 + 超时说明（安全网）：竞态表现为秒级失败并打印在等什么，而非无限挂起。
     private func waitUntil(
-        timeout: TimeInterval = 2, _ condition: @escaping () -> Bool
+        timeout: TimeInterval = 5, what: String, _ condition: @escaping () -> Bool
     ) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() && Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        return condition()
+        if condition() { return true }
+        print("⚠️ [PanelViewModelTests] 等待超时(\(timeout)s)：\(what)")
+        return false
     }
 
     // MARK: - 管线：扫描 → 识别 → 四区行
@@ -249,7 +252,9 @@ final class PanelViewModelTests: XCTestCase {
         let model = makeModel(scanner: scanner)
 
         model.start()
-        let refreshed = await waitUntil { scanner.callCount >= 1 }
+        // 兜底（stop 幂等）：后面任何断言失败导致用例中止，也保证停掉调度器。
+        addTeardownBlock { model.stop() }
+        let refreshed = await waitUntil(what: "首刷落定（scanner.callCount >= 1）") { scanner.callCount >= 1 }
         model.stop()
 
         XCTAssertTrue(refreshed, "启动先刷一次，面板打开即有数据")
@@ -257,39 +262,42 @@ final class PanelViewModelTests: XCTestCase {
 
     /// 调度行为（复用 ManualClock 虚拟时钟）：面板可见期间活动档 5s；
     /// 消失后不记录活动 → 空闲退避 30s（低资源：面板隐藏不加速刷新）。
-    func test面板可见快刷隐藏后退避() async {
+    func test面板可见快刷隐藏后退避() async throws {
         let clock = ManualClock()
         let scanner = FakeScanner([.success(ScanResult(services: [], source: .lsof))])
         let model = makeModel(scanner: scanner, clock: clock, idleThreshold: .seconds(30))
 
         model.panelDidAppear()
         model.start()
-        await waitUntil { scanner.callCount >= 1 }   // 初始刷新
+        addTeardownBlock { model.stop() }
+        _ = await waitUntil(what: "初始刷新（scanner.callCount >= 1）") { scanner.callCount >= 1 }
 
-        func fireTick(at time: Duration, expectCalls: Int) async {
-            await clock.waitForSleepRegistration()
+        func fireTick(at time: Duration, expectCalls: Int) async throws {
+            try await clock.waitForSleepRegistration()
             clock.advance(to: time)
-            _ = await waitUntil { scanner.callCount >= expectCalls }
+            _ = await waitUntil(what: "第 \(expectCalls) 次扫描（tick 已 advance 到 \(time)）") {
+                scanner.callCount >= expectCalls
+            }
         }
 
-        await fireTick(at: .seconds(5), expectCalls: 2)
-        await fireTick(at: .seconds(10), expectCalls: 3)
-        await fireTick(at: .seconds(15), expectCalls: 4)
+        try await fireTick(at: .seconds(5), expectCalls: 2)
+        try await fireTick(at: .seconds(10), expectCalls: 3)
+        try await fireTick(at: .seconds(15), expectCalls: 4)
 
         model.panelDidDisappear()
         // 5s 节奏走完退避阈值前的剩余轮次。
-        await fireTick(at: .seconds(20), expectCalls: 5)
-        await fireTick(at: .seconds(25), expectCalls: 6)
-        await fireTick(at: .seconds(30), expectCalls: 7)
+        try await fireTick(at: .seconds(20), expectCalls: 5)
+        try await fireTick(at: .seconds(25), expectCalls: 6)
+        try await fireTick(at: .seconds(30), expectCalls: 7)
         // 隐藏后：30s 内不再刷（t=40 无 tick）。循环此刻已 parked 在睡到 t=60 的那轮
         // sleep 上（tick-30 落定时的注册）——不再 arm，直接拨时间。
-        await clock.waitForSleepRegistration()
+        try await clock.waitForSleepRegistration()
         clock.advance(to: .seconds(40))
         try? await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(scanner.callCount, 7, "面板隐藏：空闲期内不加速刷新")
         // 退避档：下一个 tick 在 30s 后。
         clock.advance(to: .seconds(60))
-        _ = await waitUntil { scanner.callCount >= 8 }
+        _ = await waitUntil(what: "退避档 tick（advance 到 60s 后第 8 次扫描）") { scanner.callCount >= 8 }
         model.stop()
     }
 
@@ -299,10 +307,17 @@ final class PanelViewModelTests: XCTestCase {
         let model = makeModel(scanner: scanner, clock: clock)
 
         model.start()
-        await waitUntil { scanner.callCount >= 1 }
+        addTeardownBlock { model.stop() }
+        _ = await waitUntil(what: "首刷落定（scanner.callCount >= 1）") { scanner.callCount >= 1 }
         model.stop()
-        await clock.waitForSleepRegistration()
+        // 工单死锁点：旧版这里 `await clock.waitForSleepRegistration()`——CPU 忙时
+        // stop 可能先于 runLoop 首次挂 sleep 到达，注册永远不会来，旧实现无界等待
+        // → xctest 孤儿进程 0% CPU 死锁。stop 已取消任务：无论循环当时是否已挂上
+        // sleep（已挂=取消即醒退出；未挂=启动即取消路径），都不可能再有 tick，
+        // 无需（也不能）等注册，直接拨时间断言。
         clock.advance(to: .seconds(500))
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        clock.advance(to: .seconds(600))
         try? await Task.sleep(nanoseconds: 150_000_000)
 
         XCTAssertEqual(scanner.callCount, 1, "stop 后无新扫描")
