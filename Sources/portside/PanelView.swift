@@ -70,6 +70,18 @@ struct PanelView: View {
                 Task { await model.editDefinition(id: draft.id, name: name, pathPrefix: prefix) }
             }
         }
+        // 危险动作确认弹窗（工单 06）：binding 派生自 ViewModel 状态——
+        // 关弹窗（Esc/点外面）= binding 置 nil = 取消，不杀；确认按钮显式送达。
+        .sheet(item: Binding(
+            get: { model.pendingConfirmation },
+            set: { newValue in
+                if newValue == nil { model.cancelPendingManagedAction() }
+            }
+        )) { confirmation in
+            ManagedActionSheet(confirmation: confirmation) {
+                Task { await model.confirmPendingManagedAction() }
+            }
+        }
         // 面板可见性 ↔ 刷新活动：可见时记录活动（活动档快刷），隐藏后自然退避（低资源）。
         .onAppear { model.panelDidAppear() }
         .onDisappear { model.panelDidDisappear() }
@@ -143,58 +155,71 @@ struct PanelView: View {
         }
     }
 
-    /// 单服务行：状态点 / 显示名 / 托管标签 / 类型 / 端口 / 运行时长 / 动作区。
+    /// 单服务行：状态点 / 显示名 / 托管标签 / 类型 / 端口 / 运行时长 / 动作区
+    /// （+ 行内状态：启动失败等错误信息，工单 06——可见不装死）。
     private func serviceRow(_ row: PanelRow, indented: Bool) -> some View {
-        HStack(spacing: 6) {
-            // 状态点：实心绿 = 监听中；空心灰 = 挂掉（托管·已停止，工单 05 起）。
-            Image(systemName: row.isUp ? "circle.fill" : "circle")
-                .font(.system(size: 8))
-                .foregroundStyle(row.isUp ? Color.green : Color.gray)
-            if indented {
-                Color.clear.frame(width: 8)
-            }
-            Text(row.displayName)
-                .font(.callout)
-                .lineLimit(1)
-                .help(row.displayName)
-            if row.isManaged {
-                Text("托管")
-                    .font(.caption2)
-                    .foregroundStyle(.teal)
-                    .help("有服务定义：停止/重启/日志全量可用")
-            }
-            Text(row.typeLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if let port = row.primaryPort {
-                Text(":\(port)")
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            if let uptime = row.uptimeText {
-                Text(uptime)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                // 状态点：实心绿 = 监听中；空心灰 = 挂掉（托管·已停止，工单 05 起）。
+                Image(systemName: row.isUp ? "circle.fill" : "circle")
+                    .font(.system(size: 8))
+                    .foregroundStyle(row.isUp ? Color.green : Color.gray)
+                if indented {
+                    Color.clear.frame(width: 8)
+                }
+                Text(row.displayName)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .help(row.displayName)
+                if row.isManaged {
+                    Text("托管")
+                        .font(.caption2)
+                        .foregroundStyle(.teal)
+                        .help("有服务定义：停止/重启/日志全量可用")
+                }
+                Text(row.typeLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .help("运行时长（取自进程启动时间）")
+                Spacer()
+                if let port = row.primaryPort {
+                    Text(":\(port)")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if let uptime = row.uptimeText {
+                    Text(uptime)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("运行时长（取自进程启动时间）")
+                }
+                actions(row)
             }
-            actions(row)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
+            if let id = row.definitionID, let message = model.statusMessage(forDefinitionID: id) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, indented ? 32 : 16)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 2)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 2)
     }
 
-    /// 行尾动作区（工单 05）：托管行全量动作（启动/停止/重启/日志/编辑/打开）；
-    /// 外部行降级形态（spec §4）——灰置按钮 + 「收编」入口。聚合父行无动作（明细行有）。
+    /// 行尾动作区（工单 05/06）：托管行全量动作——停止/重启经确认流（工单 06，
+    /// 确认前不杀）；启动直达。外部行降级形态（spec §4）——灰置按钮 + 「收编」入口。
     @ViewBuilder
     private func actions(_ row: PanelRow) -> some View {
         if row.isManaged {
             if row.isUp {
                 iconButton("stop.fill", "停止") {
-                    if let id = row.definitionID { Task { await model.stopService(id) } }
+                    if let id = row.definitionID { model.requestStopService(id) }
                 }
                 iconButton("arrow.clockwise", "重启") {
-                    if let id = row.definitionID { Task { await model.restartService(id) } }
+                    if let id = row.definitionID { model.requestRestartService(id) }
                 }
                 iconButton("doc.text", "日志（工单 07 接入）") {
                     if let id = row.definitionID { model.openLog(id) }

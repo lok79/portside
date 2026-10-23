@@ -130,3 +130,36 @@ struct EditSheet: View {
         .frame(width: 380)
     }
 }
+
+/// 危险动作确认弹窗（工单 06，spec §4）：显示服务名/端口/动作解释，二次确认。
+/// 确认走 ViewModel 状态机（此刻才送达进程控制器）；取消（或直接关弹窗）什么都不发生。
+struct ManagedActionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let confirmation: ManagedActionConfirmation
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(confirmation.actionLabel).font(.headline)
+            Text(confirmation.explanation)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("取消") {
+                    dismiss()   // 关弹窗 → 派生 binding 置 nil → ViewModel 取消，不杀
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(confirmation.kind == .stop ? "确认停止" : "确认重启") {
+                    onConfirm()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+}

@@ -25,6 +25,10 @@ public final class PanelViewModel: ObservableObject {
     @Published public private(set) var health: MenuBarBadgeState = .normal
     /// 聚合行展开状态（渲染态，默认折叠；不持久化）。
     @Published private var expandedRowIDs: Set<String> = []
+    /// 托管动作待确认（工单 06：停止/重启前二次确认，spec §4；nil = 无待确认）。
+    @Published public private(set) var pendingConfirmation: ManagedActionConfirmation?
+    /// 托管行内状态（工单 06：启动失败错误可见不装死；定义 id → 文案）。
+    @Published public private(set) var managedStatusMessages: [String: String] = [:]
     /// 「隐藏其他」开关：读经持久层，写穿持久层。
     @Published public var isOtherHidden: Bool {
         didSet { store.set(isOtherHidden, forKey: Self.hideOtherKey) }
@@ -91,11 +95,16 @@ public final class PanelViewModel: ObservableObject {
     }
 
     /// 生产装配：真实扫描器 + 识别引擎 + ps 运行时长采集 + UserDefaults 偏好 +
-    /// 服务定义中枢（JSON 落盘应用容器）。进程控制真实现归工单 06，此处暂不注入。
+    /// 服务定义中枢（JSON 落盘应用容器）+ 进程控制真实现（工单 06：登录 shell +
+    /// 独立进程组 + 落盘日志，日志目录 `~/Library/Application Support/Portside/logs/`）。
     public static func production() -> PanelViewModel {
         let runner = SystemProcessRunner()
         let definitions = ServiceDefinitionCenter(
             store: DefinitionStore(directory: DefinitionStore.defaultDirectory())
+        )
+        let processController = ShellProcessController(
+            logsDirectory: ShellProcessController.defaultLogsDirectory(),
+            runner: runner
         )
         return PanelViewModel(
             scanner: CompositeScanner(runner: runner),
@@ -105,6 +114,7 @@ public final class PanelViewModel: ObservableObject {
             knownDefinitions: { definitions.knownDefinitions() },
             uptimeFetcher: ProcessUptimeFetcher(runner: runner),
             definitions: definitions,
+            processController: processController,
             store: UserDefaultsStore()
         )
     }
@@ -253,29 +263,108 @@ public final class PanelViewModel: ObservableObject {
         await recompute(from: lastScan ?? ScanResult(services: [], source: .lsof))
     }
 
-    // MARK: - 托管动作（工单 05 只送达接缝；进程控制真实现归工单 06，日志管道归 07）
+    // MARK: - 托管动作（工单 06：危险动作二次确认 + 启动失败行内状态；日志管道归 07）
 
-    /// 「启动」已停止的托管服务。
+    /// 「启动」已停止的托管服务。启动失败写进行内状态（不崩 app），成功清除旧状态。
     public func startService(_ definitionID: String) async {
         guard let definition = definitions?.definition(id: definitionID) else { return }
-        try? await processController?.start(definition)
+        do {
+            try await processController?.start(definition)
+            managedStatusMessages[definitionID] = nil
+        } catch {
+            managedStatusMessages[definitionID] = (error as? ProcessStartError)?.userMessage
+                ?? "启动失败：\(String(describing: error))"
+        }
+        await refreshOnce()
     }
 
-    /// 停止托管服务。
+    /// 停止托管服务（直接执行路径；UI 走 `requestStopService` 确认流）。
     public func stopService(_ definitionID: String) async {
         guard let definition = definitions?.definition(id: definitionID) else { return }
         try? await processController?.stop(definition)
+        await refreshOnce()
     }
 
-    /// 重启托管服务。
+    /// 重启托管服务（直接执行路径；UI 走 `requestRestartService` 确认流）。
     public func restartService(_ definitionID: String) async {
         guard let definition = definitions?.definition(id: definitionID) else { return }
         try? await processController?.restart(definition)
+        await refreshOnce()
+    }
+
+    /// 请求停止：只挂起确认（服务名/端口/动作解释），**不杀**——确认后才送达控制器。
+    public func requestStopService(_ definitionID: String) {
+        guard let definition = definitions?.definition(id: definitionID) else { return }
+        pendingConfirmation = ManagedActionConfirmation(
+            definitionID: definitionID, kind: .stop,
+            serviceName: definition.name, port: definition.port
+        )
+    }
+
+    /// 请求重启：只挂起确认，**不杀**——确认后才送达控制器。
+    public func requestRestartService(_ definitionID: String) {
+        guard let definition = definitions?.definition(id: definitionID) else { return }
+        pendingConfirmation = ManagedActionConfirmation(
+            definitionID: definitionID, kind: .restart,
+            serviceName: definition.name, port: definition.port
+        )
+    }
+
+    /// 确认待执行动作：此刻才把停止/重启送达进程控制器。
+    public func confirmPendingManagedAction() async {
+        guard let pending = pendingConfirmation else { return }
+        pendingConfirmation = nil
+        switch pending.kind {
+        case .stop: await stopService(pending.definitionID)
+        case .restart: await restartService(pending.definitionID)
+        }
+    }
+
+    /// 取消待确认动作：什么都不发生。
+    public func cancelPendingManagedAction() {
+        pendingConfirmation = nil
+    }
+
+    /// 定义行的行内状态文案（nil = 无）。
+    public func statusMessage(forDefinitionID id: String) -> String? {
+        managedStatusMessages[id]
     }
 
     /// 查看托管服务日志（工单 07 接入日志管道前的桩：动作就位，暂无日志视图可开）。
     public func openLog(_ definitionID: String) {
         guard definitions?.definition(id: definitionID) != nil else { return }
         // 工单 07：切日志视图 + tail。本票仅守卫定义存在性。
+    }
+}
+
+/// 危险动作确认载荷（工单 06，spec §4：停止/重启前显示服务名/端口/解释并二次确认）。
+/// 纯数据，UI 据此渲染弹窗；确认/取消走 ViewModel 状态机（可测：确认前不杀、确认后才杀）。
+/// Identifiable（id = 定义 id）供 SwiftUI sheet(item:) 使用；同一定义重复请求直接覆盖。
+public struct ManagedActionConfirmation: Equatable, Sendable, Identifiable {
+    public enum Kind: Equatable, Sendable {
+        case stop
+        case restart
+    }
+
+    public let definitionID: String
+    public let kind: Kind
+    /// 服务名（= 定义名/别名）。
+    public let serviceName: String
+    /// 定义的端口。
+    public let port: Int
+
+    public var id: String { definitionID }
+
+    /// 动作标题（「停止服务」/「重启服务」）。
+    public var actionLabel: String { kind == .stop ? "停止服务" : "重启服务" }
+
+    /// 动作解释（GLOSSARY：进程组——对整组发信号，fork 的子进程一并处理）。
+    public var explanation: String {
+        switch kind {
+        case .stop:
+            return "将对「\(serviceName)」（端口 \(port)）的整个进程组发送终止信号，超时未退出则强制结束；它 fork 的子进程一并停止。"
+        case .restart:
+            return "将先停止「\(serviceName)」（端口 \(port)）的整个进程组（含 fork 的子进程），再按服务定义重新启动。"
+        }
     }
 }
