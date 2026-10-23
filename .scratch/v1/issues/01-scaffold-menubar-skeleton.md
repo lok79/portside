@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done（1 项待人工实机确认，见 Comments）
 
 - [x] `swift build` 与 `swift test` 全绿；包结构 = PortsideKit 库目标 + portside 可执行目标 + 测试目标
 - [ ] `swift run` 后菜单栏图标出现；点开紧凑主窗（约 620px），再点图标隐藏；窗口失焦自动隐藏
