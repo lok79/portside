@@ -232,7 +232,17 @@ public final class PanelViewModel: ObservableObject {
                 for service in services {
                     // 托管·运行中：匹配到的定义提供托管标记/路径前缀/动作路由 id。
                     let definition = definitions?.matchedDefinition(for: service.service)
-                    if let definition { matchedDefinitionIDs.insert(definition.id) }
+                    if let definition {
+                        matchedDefinitionIDs.insert(definition.id)
+                        // 自动认领（工单 08，adr/0001）：按定义匹配到的运行中实例登记进
+                        // 进程控制器（受管外部实例）。首轮扫描即认领（app 打开几秒内列表
+                        // 即正确）；登记 O(1) 同步完成不阻塞 UI，重复登记幂等（亲生身份
+                        // 保留）；partial 扫描照常按可用数据走——拿不到命令行的实例
+                        // 在匹配器处自然落空（宁漏认不误认）。
+                        if let pid = service.service.pid {
+                            processController?.reclaim(definitionID: definition.id, pid: pid_t(pid))
+                        }
+                    }
                     rows.append(PanelRowFactory.leafRow(
                         for: service, section: .mine,
                         uptimeText: service.service.pid.flatMap { uptimes[$0] }.map(UptimeText.format),
@@ -370,13 +380,19 @@ public final class PanelViewModel: ObservableObject {
         stopActiveTail()
         logGeneration += 1
         let generation = logGeneration
+        // 认领实例标记（工单 08）：受管外部实例「输出未接管」——日志发现按
+        // 「标准路径有文件则用 → 外部发现链兜底 → 明示」走（未接管形态进 LogContext）。
+        let isReclaimed = row.definitionID.map {
+            processController?.isReclaimedInstance(definitionID: $0) ?? false
+        } ?? false
         let context = LogContext(
             serviceName: row.displayName,
             port: row.primaryPort,
             isManaged: row.isManaged,
             definitionID: row.definitionID,
             pid: row.pid,
-            workingDirectory: row.workingDirectory
+            workingDirectory: row.workingDirectory,
+            isReclaimed: isReclaimed
         )
         logContext = context
         logText = ""
@@ -398,7 +414,12 @@ public final class PanelViewModel: ObservableObject {
                 tail.start()
                 self.logStatus = .found
             case .notFound:
-                self.logStatus = .notFound(LogLocator.externalLogNotFoundNotice)
+                // 明示文案按实例形态区分（工单 08：认领实例 = 输出未接管；外部 = 外部启动）。
+                self.logStatus = .notFound(
+                    context.isReclaimed
+                        ? LogLocator.reclaimedLogNotFoundNotice
+                        : LogLocator.externalLogNotFoundNotice
+                )
             }
         }
     }

@@ -50,16 +50,21 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
     /// 一个已启动服务的追踪条目（waiters/exitStatus 归条目锁管，reaper 不反查 controller）。
     private final class ProcessEntry {
         let pid: pid_t
-        /// 进程组 id（= 领袖 pid：SETPGROUP 且 pgroup=0 时子进程即新组领袖）。
+        /// 进程组 id（= 领袖 pid：SETPGROUP 且 pgroup=0 时子进程即新组领袖；
+        /// 认领条目 = 实例所在组的 id，getpgid 现取）。
         let pgid: pid_t
+        /// true = 认领的受管外部实例（工单 08）：非本 app 亲生——**不起 waitpid reaper**
+        /// （收尸权不在本进程，waitpid 必 ECHILD），退出感知走有界存活探询。
+        let isReclaimed: Bool
         /// 条目自身锁：reaper（任意队列线程）与 controller（任意 actor）都要碰。
         private let stateLock = NSLock()
         private var exitStatus: Int32?
         private var waiters: [ExitWaiter] = []
 
-        init(pid: pid_t, pgid: pid_t) {
+        init(pid: pid_t, pgid: pid_t, isReclaimed: Bool = false) {
             self.pid = pid
             self.pgid = pgid
+            self.isReclaimed = isReclaimed
         }
 
         /// 记录退出并唤醒全部等待者（reaper 收尸后恰好调用一次）。
@@ -118,6 +123,8 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
     public static let defaultStartupWindow = Duration.seconds(2)
     /// SIGKILL 后等待内核收尾的上限。
     public static let defaultKillTimeout = Duration.seconds(2)
+    /// 认领实例的存活探询间隔（仅停止/重启竞速期间运行；无空闲开销）。
+    public static let reclaimedExitPollInterval = Duration.milliseconds(100)
 
     /// 生产默认日志目录：`~/Library/Application Support/Portside/logs/`。
     public static func defaultLogsDirectory() -> URL {
@@ -197,6 +204,47 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
     /// 落盘日志文件路径（`<logsDirectory>/<定义id>.log`；定义 id 跨改名稳定）。
     public func logFileURL(definitionID: String) -> URL {
         logsDirectory.appendingPathComponent("\(definitionID).log")
+    }
+
+    /// 认领登记（工单 08，GLOSSARY：认领；adr/0001）：把按服务定义（端口 + 启动命令）
+    /// 匹配到的运行中实例纳回运行态追踪——**受管外部实例**。登记后停止/重启按整组信号
+    /// 生效；重启经亲生路径重起，回到「自己起的」状态。
+    /// - **非亲生**：不起 waitpid reaper（收尸权不在本进程，孤儿归 launchd 接管），
+    ///   退出感知走有界存活探询（仅停止/重启的宽限竞速期间运行，无空闲开销）。
+    /// - 幂等与不覆盖事实（「宁漏认不误认」的对偶——不覆盖追踪事实）：
+    ///   同 pid 已在追 → 无操作返回 true（亲生/认领身份都保留）；
+    ///   该定义已有**存活**的其他 pid 条目 → 拒绝登记返回 false（宁可漏认）；
+    ///   旧条目已退出（实例换代）→ 替换为认领条目。
+    /// - Returns: false = 未能登记（实例已退出 / 与在追条目冲突）。
+    @discardableResult
+    public func reclaim(definitionID: String, pid: pid_t) -> Bool {
+        guard pid > 0, let pgid = Self.processGroupID(of: pid) else { return false }
+        return lock.withLock {
+            if let existing = entries[definitionID] {
+                guard existing.currentExitStatus() != nil else {
+                    // 存活条目：同 pid 幂等（身份保留），异 pid 冲突拒绝（不误认）。
+                    return existing.pid == pid
+                }
+                // 旧条目已退出：实例换代，替换。
+            }
+            entries[definitionID] = ProcessEntry(pid: pid, pgid: pgid, isReclaimed: true)
+            return true
+        }
+    }
+
+    /// 该定义当前是否为认领的受管外部实例（亲生进程为 false；工单 08 日志视图据此
+    /// 决定是否落「认领实例但输出未接管」的发现链兜底形态）。
+    public func isReclaimedInstance(definitionID: String) -> Bool {
+        lock.withLock {
+            guard let entry = entries[definitionID] else { return false }
+            return entry.isReclaimed && entry.currentExitStatus() == nil
+        }
+    }
+
+    /// 进程组 id（pid 无效/已退出返回 nil）。
+    private static func processGroupID(of pid: pid_t) -> pid_t? {
+        let pgid = getpgid(pid)
+        return pgid > 0 ? pgid : nil
     }
 
     // MARK: - 启动
@@ -413,8 +461,19 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         }
     }
 
-    /// 挂起直到该 pid 退出（reaper 唤醒）或当前任务被取消（取消即返回，先取消后注册也覆盖）。
+    /// 挂起直到该 pid 退出（reaper 唤醒 / 认领实例走存活探询）或当前任务被取消
+    /// （取消即返回，先取消后注册也覆盖）。
     private func awaitExit(_ pid: pid_t) async {
+        let entry: ProcessEntry? = lock.withLock { entries.values.first { $0.pid == pid } }
+        if entry?.isReclaimed == true {
+            // 非亲生（工单 08 认领实例）：waitpid 收尸权不在本进程（必 ECHILD），
+            // 无 reaper 可等——改走有界存活探询。raceExit 超时即取消本任务，
+            // 探询只在停止/重启竞速期间运行。
+            while Self.isAlive(pid) && !Task.isCancelled {
+                try? await clock.sleep(for: Self.reclaimedExitPollInterval)
+            }
+            return
+        }
         let waiter = ExitWaiter()
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -451,6 +510,11 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
             await group.waitForAll()
             return first
         }
+    }
+
+    /// 进程是否存活（EPERM 也视为存活——存在但不可信号；ESRCH = 已退出）。
+    private static func isAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     /// 进程组是否仍有存活成员（EPERM 也视为存活；ESRCH = 全灭）。

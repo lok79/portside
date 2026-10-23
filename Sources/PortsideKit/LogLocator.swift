@@ -2,6 +2,9 @@ import Foundation
 
 /// 日志上下文（工单 07）：日志视图打开时的服务事实——发现链的输入。
 /// 托管 = 定义 id（落盘通道已知路径）；外部 = pid + 工作目录（发现链输入，均可缺失）。
+/// 工单 08：`isReclaimed` 标记认领的受管外部实例——已纳管但**输出未接管**
+/// （外部时代起的进程，输出仍流向原处），日志发现按「标准路径有文件则用 →
+/// 外部发现链兜底 → 明示」走，不装死。
 public struct LogContext: Equatable, Sendable {
     /// 服务显示名（日志视图头部）。
     public let serviceName: String
@@ -16,10 +19,13 @@ public struct LogContext: Equatable, Sendable {
     /// 工作目录（目录兜底输入）；采集不到为 nil。
 
     public let workingDirectory: String?
+    /// true = 认领的受管外部实例（工单 08）；亲生托管/外部服务为 false。
+    public let isReclaimed: Bool
 
     public init(
         serviceName: String, port: Int?, isManaged: Bool,
-        definitionID: String?, pid: Int?, workingDirectory: String?
+        definitionID: String?, pid: Int?, workingDirectory: String?,
+        isReclaimed: Bool = false
     ) {
         self.serviceName = serviceName
         self.port = port
@@ -27,6 +33,7 @@ public struct LogContext: Equatable, Sendable {
         self.definitionID = definitionID
         self.pid = pid
         self.workingDirectory = workingDirectory
+        self.isReclaimed = isReclaimed
     }
 }
 
@@ -96,6 +103,9 @@ public enum LsofFdParser {
 public struct LogLocator: LogLocating {
     /// ③未发现的明示文案（GLOSSARY：日志流——不装死）。
     public static let externalLogNotFoundNotice = "外部启动，未发现日志文件"
+    /// 认领实例未发现的明示文案（工单 08：已纳管但输出未接管，也不装死）。
+    public static let reclaimedLogNotFoundNotice =
+        "已认领为托管，但未接管其输出，也未发现它正在写的日志文件"
 
     private let runner: ProcessRunner?
     private let managedLogsDirectory: URL
@@ -134,10 +144,18 @@ public struct LogLocator: LogLocating {
 
     public func locate(_ context: LogContext) async -> LogAvailability {
         if context.isManaged {
-            // 托管：已知路径，无条件返回（文件未建 = tail 等待出现，工单口径）。
-            return .available(
-                managedLogsDirectory.appendingPathComponent("\(context.definitionID ?? "").log")
+            let managedURL = managedLogsDirectory.appendingPathComponent(
+                "\(context.definitionID ?? "").log"
             )
+            if context.isReclaimed {
+                // 认领实例（工单 08）：标准落盘路径有文件 = 解耦真身——前一世 Portside
+                // 落的盘，句柄仍在子进程手里，命中即正确；无文件 = 该实例输出从未经
+                // Portside 落盘（外部时代起的），落下方 07 外部发现链兜底，明示不装死。
+                if Self.isFile(managedURL.path) { return .available(managedURL) }
+            } else {
+                // 亲生/本会话启动：已知路径，无条件返回（文件未建 = tail 等待出现，工单口径）。
+                return .available(managedURL)
+            }
         }
         // ① fd 扫描：进程正在写的 .log/.out（命中即正确）。
         if let pid = context.pid, let candidates = await scanOpenFiles(pid: pid), !candidates.isEmpty {

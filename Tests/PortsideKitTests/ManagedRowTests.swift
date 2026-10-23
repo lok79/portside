@@ -122,7 +122,7 @@ final class ProcessControllerStubTests: XCTestCase {
     }
 }
 
-/// 测试替身：记录调用的进程控制器（工单 06 的真实现接缝）。
+/// 测试替身：记录调用的进程控制器（工单 06 的真实现接缝；工单 08 扩认领记录）。
 final class FakeProcessController: ProcessController, @unchecked Sendable {
     struct Call: Equatable {
         let action: String
@@ -130,7 +130,12 @@ final class FakeProcessController: ProcessController, @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    /// 生命周期动作（start/stop/restart）——「杀」语义的记录（确认状态机断言依据）。
     private(set) var calls: [Call] = []
+    /// 认领登记（工单 08）：与杀动作分开记——认领不是杀，确认前不杀的断言不受影响。
+    private(set) var reclaims: [(definitionID: String, pid: pid_t)] = []
+    /// 认领实例标记（工单 08：`isReclaimedInstance` 查询的注入回值）。
+    var reclaimedDefinitionIDs: Set<String> = []
 
     func start(_ definition: ServiceDefinition) async throws {
         lock.withLock { calls.append(Call(action: "start", definitionID: definition.id)) }
@@ -142,5 +147,15 @@ final class FakeProcessController: ProcessController, @unchecked Sendable {
 
     func restart(_ definition: ServiceDefinition) async throws {
         lock.withLock { calls.append(Call(action: "restart", definitionID: definition.id)) }
+    }
+
+    /// 认领登记记录（不进 `calls`：认领不是杀，不搅既有确认状态机断言）。
+    func reclaim(definitionID: String, pid: pid_t) -> Bool {
+        lock.withLock { reclaims.append((definitionID, pid)) }
+        return true
+    }
+
+    func isReclaimedInstance(definitionID: String) -> Bool {
+        lock.withLock { reclaimedDefinitionIDs.contains(definitionID) }
     }
 }
