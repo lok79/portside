@@ -49,7 +49,8 @@ struct LogStreamView: View {
                     .help("Portside 落盘通道日志")
             }
             if let port = context.port {
-                Text(":\(port)")
+                // verbatim（工单 11）：同 PanelView 端口 chip——字面量插值不吃本地化千分位。
+                Text(verbatim: ":\(port)")
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }

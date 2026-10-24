@@ -131,7 +131,7 @@ struct PanelView: View {
             HStack(spacing: 6) {
                 Text(section.title)
                     .font(.headline)
-                Text("\(rows.count)")
+                Text(verbatim: "\(rows.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -183,6 +183,7 @@ struct PanelView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 16)
+            .rowHoverHighlight()
             if model.isExpanded(row.id) {
                 ForEach(row.children) { child in
                     serviceRow(child, indented: true)
@@ -219,7 +220,9 @@ struct PanelView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let port = row.primaryPort {
-                    Text(":\(port)")
+                    // verbatim（工单 11）：字面量会进 LocalizedStringKey，整数插值
+                    // 按 locale 加千分位（实机显示 :23,030）；端口是原始数字，不走本地化。
+                    Text(verbatim: ":\(port)")
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -233,6 +236,7 @@ struct PanelView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 2)
+            .rowHoverHighlight()
             .contentShape(Rectangle())
             .onTapGesture {
                 model.openLog(rowID: row.id)
@@ -304,23 +308,27 @@ struct PanelView: View {
             .help(row.commandLine == nil
                   ? "扫描受限：未取得启动命令，暂无法收编"
                   : "补记启动命令，升级为托管服务")
+            .buttonHoverHighlight()
             if let url = row.openURL {
                 openButton(url, port: row.primaryPort ?? 0)
             }
         }
     }
 
-    /// 图标小按钮（plain 风格，悬停提示）。
+    /// 图标小按钮（plain 风格，悬停提示；hover 圆角底衬见 HoverHighlight，工单 11）。
     private func iconButton(
         _ systemImage: String, _ help: String, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .frame(width: 14)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 2)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .help(help)
+        .buttonHoverHighlight()
     }
 
     /// 「打开」：浏览器直达 http://localhost:{port}{路径前缀}（spec §5）。
@@ -330,9 +338,49 @@ struct PanelView: View {
         } label: {
             Image(systemName: "arrow.up.forward")
                 .frame(width: 14)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 2)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .help("在默认浏览器打开 http://localhost:\(port)\(url.path)")
+        // verbatim（工单 11）：tooltip 里的端口同样不吃本地化千分位。
+        .help(Text(verbatim: "在默认浏览器打开 http://localhost:\(port)\(url.path)"))
+        .buttonHoverHighlight()
+    }
+}
+
+/// hover 高亮（工单 11，纯 View 层）：悬停时在内容底下垫圆角浅色底衬，
+/// 移开即恢复；底衬用 `Color.primary` 按透明度调，深浅色模式都可见。
+/// `respectEnabled` = 跟随禁用态（按钮惯例：禁用 hover 不高亮）；行高亮传 false。
+private struct HoverHighlight<Content: View>: View {
+    let cornerRadius: CGFloat
+    let opacity: Double
+    let respectEnabled: Bool
+    @ViewBuilder let content: () -> Content
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    var body: some View {
+        content()
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(Color.primary.opacity(
+                        isHovered && (!respectEnabled || isEnabled) ? opacity : 0
+                    ))
+            )
+            .onHover { isHovered = $0 }
+    }
+}
+
+private extension View {
+    /// 行内按钮 hover 底衬（禁用态不高亮）。
+    func buttonHoverHighlight() -> some View {
+        HoverHighlight(cornerRadius: 4, opacity: 0.08, respectEnabled: true) { self }
+    }
+
+    /// 整行 hover 微亮（聚合行头同样适用）。
+    func rowHoverHighlight() -> some View {
+        HoverHighlight(cornerRadius: 6, opacity: 0.04, respectEnabled: false) { self }
     }
 }
