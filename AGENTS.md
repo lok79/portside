@@ -1,6 +1,6 @@
 # portside · Agent 指南
 
-Portside · 服务码头——macOS 菜单栏应用：自动发现本机开发服务（Java 后端 / 前端 dev server），随手看名称、端口、存活，管启动/停止/重启/打开/日志。术语见 [GLOSSARY.md](./GLOSSARY.md)；v1 规格见 [../.scratch/portside/v1/spec.md](../.scratch/portside/v1/spec.md)；立项决策见 [../docs/decisions/D-004-Portside立项-SwiftUI菜单栏形态.md](../docs/decisions/D-004-Portside立项-SwiftUI菜单栏形态.md)，产品级技术决策记 `docs/adr/`（首个决策时懒创建）。
+Portside · 服务码头——macOS 菜单栏应用：自动发现本机开发服务（Java 后端 / 前端 dev server），随手看名称、端口、存活，管启动/停止/重启/打开/日志。术语见 [GLOSSARY.md](./GLOSSARY.md)；v1 规格见 [.scratch/v1/spec.md](.scratch/v1/spec.md)；立项决策 D-004 与公司级判断住公司仓库 [lok79/handbook](https://github.com/lok79/handbook) 的 `docs/decisions/`，产品级技术决策记 `docs/adr/`（已有 0001、0002）。
 
 ## 技术栈与形态
 
