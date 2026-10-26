@@ -29,8 +29,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleExecutable</key><string>portside</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
-	<key>CFBundleShortVersionString</key><string>0.1.0</string>
-	<key>CFBundleVersion</key><string>0.1.0</string>
+	<key>CFBundleShortVersionString</key><string>1.0.0</string>
+	<key>CFBundleVersion</key><string>1.0.0</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>
@@ -40,7 +40,13 @@ PLIST
 echo "▸ ad-hoc codesign"
 codesign --force -s - "$APP"
 
-if [[ "${1:-}" == "--install" ]]; then
+if [[ "${1:-}" == "--zip" ]]; then
+    # 发布包:ditto 保留签名与元数据,keepParent 让解压直接得到 Portside.app
+    ZIP="$ROOT/.build/Portside-1.0.0.zip"
+    rm -f "$ZIP"
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+    echo "✅ 发布包:$ZIP"
+elif [[ "${1:-}" == "--install" ]]; then
     DEST="/Applications"
     if ! cp -R "$APP" "$DEST/" 2>/dev/null; then
         DEST="$HOME/Applications"

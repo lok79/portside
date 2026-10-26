@@ -17,6 +17,20 @@ macOS 菜单栏应用：自动发现本机正在运行的开发服务（Java 后
 - **刷新三档**：实时（5s 常驻）/ 均衡（活动 5s、空闲 30s，默认）/ 低资源（30s / 120s），面板底栏切换即时生效，选择记住。
 - **汇总态上图标**：收编过的服务挂了，图标变红警示三角——不开面板也知道。
 
+## 下载安装（推荐，免构建）
+
+1. 到 [Releases](https://github.com/lok79/portside/releases/latest) 下载 `Portside-1.0.0.zip`，解压得到 `Portside.app`，拖进「应用程序」。
+2. **首次打开（重要）**：本应用未公证（ad-hoc 签名），macOS 会拦一次。任选其一：
+   - Finder 里**右键** `Portside.app` → 「打开」→ 再点「打开」（只需一次，之后正常双击）；
+   - 或终端执行：
+
+   ```bash
+   xattr -cr /Applications/Portside.app
+   ```
+3. 启动后主窗弹出、菜单栏出现帆船图标；关掉主窗它仍在菜单栏待命，点 Dock 或菜单栏图标随时调回。
+
+要求：macOS 14+，Apple Silicon（M 系列）。
+
 ## 构建与运行
 
 需要 macOS 14+ 和 Swift 6 工具链（Xcode 16+）。零第三方依赖。
@@ -47,7 +61,7 @@ PORTSIDE_SMOKE=1 swift test --filter ScannerSmokeTests   # 另加：本机实扫
 
 ## 当前限制（v1 自用版）
 
-- 未签名、未公证（仅 ad-hoc 签名）——首次运行 macOS 可能拦一次。
+- 未签名、未公证（仅 ad-hoc 签名）——首次运行 macOS 拦一次，首开方法见上文「下载安装」。
 - 无开机自启。
 - 外部服务的日志是尽力发现：进程的 stdout 在它启动那一刻就流向了别处，Portside 只能找落盘文件；真 PTY（交互 stdin，flutter/expo 场景）不支持。
 - 包装命令的服务定义（如收编 `npm run dev`，实际监听者是 node/vite）在端口兜底停止路径受限：杀前命令校验宁漏杀不误杀，会拒绝停止并明示；Portside 亲生启动/重启不受影响（v1.x 候选：进程树归因兜底）。
