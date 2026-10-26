@@ -116,6 +116,7 @@ struct PanelView: View {
                 Toggle("隐藏其他", isOn: $model.isOtherHidden)
                     .toggleStyle(.checkbox)
                     .font(.callout)
+                    .buttonHoverHighlight()
                 Spacer()
                 // 刷新三档设置区（工单 09，spec §1）：主窗内三选一，切换即时生效（下一轮起用新档），
                 // 持久化（KeyValueStore）。档位语义见 RefreshMode——实时：5s 常驻不退避；
@@ -132,6 +133,7 @@ struct PanelView: View {
                     Text("低资源").tag(RefreshMode.lowResource)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 190)
                 .help("扫描频率：实时 5s 常驻；均衡 活动 5s / 空闲 30s；低资源 30s / 120s")
                 Button("退出 Portside") {
@@ -140,6 +142,7 @@ struct PanelView: View {
                 .buttonStyle(.plain)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .buttonHoverHighlight()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)

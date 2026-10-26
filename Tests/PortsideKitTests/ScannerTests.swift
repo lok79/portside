@@ -303,4 +303,15 @@ final class ScannerTests: XCTestCase {
         XCTAssertTrue(result.isPartial)
         XCTAssertNotNil(result.partialNotice)
     }
+
+    // MARK: - 扫描子进程 locale(工单12 修复:Finder 拉起无 LANG,ps/lsof 把
+    // CJK 进程名按字节转义成 M-x 记号 → 面板乱码;根层在 Process 环境注入)。
+
+    func test扫描子进程环境强制UTF8Locale其余继承() {
+        let env = SystemProcessRunner.localeEnvironment(base: ["PATH": "/usr/bin:/bin", "HOME": "/Users/x"])
+        XCTAssertEqual(env["LC_ALL"], "en_US.UTF-8", "强制 UTF-8,不依赖启动方环境")
+        XCTAssertEqual(env["LANG"], "en_US.UTF-8")
+        XCTAssertEqual(env["PATH"], "/usr/bin:/bin", "其余环境继承不丢")
+        XCTAssertEqual(env["HOME"], "/Users/x")
+    }
 }

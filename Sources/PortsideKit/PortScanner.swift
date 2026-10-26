@@ -46,6 +46,9 @@ public struct SystemProcessRunner: ProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
+        // Locale 固定 UTF-8:Finder 拉起的环境无 LANG,ps/lsof 会把非 ASCII
+        // 进程名按字节转义成 M-x 记号(微信 → M-eM->M-.),面板整行乱码。
+        process.environment = Self.localeEnvironment()
         // 管道收口 stdout/stderr，避免子进程直连终端；不用 shell，杜绝注入面。
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -75,5 +78,16 @@ public struct SystemProcessRunner: ProcessRunner {
         let stderr = String(decoding: await stderrTask.value, as: UTF8.self)
 
         return ProcessOutput(exitCode: exitCode, stdout: stdout, stderr: stderr)
+    }
+
+    /// 扫描子进程环境：继承本进程 + 强制 UTF-8 locale（en_US.UTF-8 在 macOS
+    /// 恒存在，不依赖用户语言设置；覆盖继承值，其余原样）。
+    static func localeEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var env = base
+        env["LC_ALL"] = "en_US.UTF-8"
+        env["LANG"] = "en_US.UTF-8"
+        return env
     }
 }
