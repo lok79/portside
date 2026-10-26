@@ -41,6 +41,9 @@ public final class PanelViewModel: ObservableObject {
     @Published public var isOtherHidden: Bool {
         didSet { store.set(isOtherHidden, forKey: Self.hideOtherKey) }
     }
+    /// 端口搜索（工单 13，GLOSSARY：端口搜索）：规范化后的查询端口；nil = 非搜索态。
+    /// 只存规范化事实（整数），输入框原文留在视图层；搜索是纯渲染层过滤，不触发扫描。
+    @Published public private(set) var searchPort: Int?
 
     // MARK: - 协作对象
 
@@ -205,9 +208,11 @@ public final class PanelViewModel: ObservableObject {
     }
 
     /// 面板隐藏：不记录活动 → 空闲退避（低资源：隐藏时不加速刷新）；
-    /// 同时停掉日志 tail 并退出日志视图（工单 07：面板隐藏即停，重开回列表）。
+    /// 同时停掉日志 tail 并退出日志视图（工单 07：面板隐藏即停，重开回列表）；
+    /// 并清空搜索（工单 13，spec 决策 8：重开面板是干净列表，过滤是临时查证动作）。
     public func panelDidDisappear() {
         closeLog()
+        clearSearch()
     }
 
     /// 切换刷新三档（工单 09，spec §1）：写穿持久层（重开仍在）+ 送达调度器
@@ -221,8 +226,33 @@ public final class PanelViewModel: ObservableObject {
     // MARK: - 行查询（渲染用）
 
     /// 某分区的行（数据层，不受「隐藏其他」影响；渲染层自行判断 isOtherHidden）。
+    /// 搜索态（工单 13）下叠加端口过滤——过滤语义在 PanelSearch（纯函数，主测试面）。
     public func rows(in section: ServiceSectionKind) -> [PanelRow] {
-        allRows.filter { $0.section == section }
+        PanelSearch.filtered(rows: allRows, port: searchPort).filter { $0.section == section }
+    }
+
+    // MARK: - 端口搜索（工单 13，spec 决策 8–9）
+
+    /// 搜索态与否（渲染层判断「隐藏其他」是否暂不生效等分支用）。
+    public var isSearching: Bool { searchPort != nil }
+
+    /// 送入输入框原文，规范化为查询端口：剔除非 ASCII 数字 → 取前 5 位（端口
+    /// 最多 5 位；防粘贴超长整数解析溢出产生「nil = 不过滤」的歧义语义）→ 整数。
+    /// 无数字可取（纯字母/空）= 非搜索态。原文不在模型层留存。
+    public func applySearchQuery(_ raw: String) {
+        searchPort = Self.normalizedSearchPort(raw)
+    }
+
+    /// 清空搜索（清空按钮 / Esc / 面板隐藏共用）。
+    public func clearSearch() {
+        searchPort = nil
+    }
+
+    /// 规范化纯函数（可测）。
+    static func normalizedSearchPort(_ raw: String) -> Int? {
+        let digits = raw.filter { $0.isASCII && $0.isNumber }
+        guard !digits.isEmpty else { return nil }
+        return Int(digits.prefix(5))
     }
 
     /// 聚合行是否展开（默认折叠）。

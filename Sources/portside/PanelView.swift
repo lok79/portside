@@ -1,7 +1,8 @@
 import SwiftUI
 import PortsideKit
 
-/// 紧凑主窗（面板，GLOSSARY）：四区列表 + partial 明示 + 「隐藏其他」开关 +
+/// 紧凑主窗（面板，GLOSSARY）：四区列表 + 端口搜索（工单 13）+ partial 明示 +
+/// 「隐藏其他」开关 +
 /// 收编/托管动作（工单 05：外部行「收编」入口；托管行 启动/停止/重启/日志/编辑）。
 /// 数据全部来自 PanelViewModel（PortsideKit），本文件只负责装配与样式——
 /// 隐藏/折叠只影响渲染（视图层判断），模型层数据不丢。
@@ -11,6 +12,10 @@ struct PanelView: View {
     @State private var adoptDraft: AdoptDraft?
     /// 别名/路径前缀编辑弹窗。
     @State private var editDraft: EditDraft?
+    /// 端口搜索框原文（工单 13，渲染态；规范化事实在 model.searchPort）。
+    @State private var searchText = ""
+    /// Cmd+F 聚焦目标（spec 决策 7）。
+    @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -55,7 +60,11 @@ struct PanelView: View {
         }
         // 面板可见性 ↔ 刷新活动：可见时记录活动（活动档快刷），隐藏后自然退避（低资源）。
         // 隐藏同时经 model.panelDidDisappear() 停日志 tail（工单 07：面板隐藏即停）。
-        .onAppear { model.panelDidAppear() }
+        .onAppear {
+            // 重开面板 = 干净列表（spec 决策 8）：搜索原文是视图层渲染态，重开清一次。
+            searchText = ""
+            model.panelDidAppear()
+        }
         .onDisappear { model.panelDidDisappear() }
     }
 
@@ -76,12 +85,26 @@ struct PanelView: View {
                 Divider()
             }
 
+            // 端口搜索（工单 13，spec 决策 6）：列表顶部常驻，通知行之下、四区之上。
+            searchField
+            Divider()
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // 全局空态（spec 决策 3）：搜索态且各分区皆空 → 一句明示，
+                    // 不空屏不装死；措辞限定「没有发现」，不承诺「不存在」。
+                    if model.isSearching, !hasVisibleRows, let port = model.searchPort {
+                        Text(verbatim: "没有发现监听端口 \(port) 的服务")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                    }
                     // 四区顺序以 PanelSections.all 为唯一来源；「隐藏其他」只影响渲染：
-                    // 其他区数据仍在模型层，关掉开关即回来。
+                    // 其他区数据仍在模型层，关掉开关即回来。搜索态（工单 13）下：
+                    // 「隐藏其他」暂不生效（决策 10），无匹配分区整个隐藏（决策 3）。
                     ForEach(PanelSections.all, id: \.kind) { section in
-                        if !(section.kind == .other && model.isOtherHidden) {
+                        if sectionVisible(section) {
                             sectionBlock(section)
                         }
                     }
@@ -121,6 +144,65 @@ struct PanelView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
+    }
+
+    /// 分区可见性：搜索态 = 有匹配才显（「隐藏其他」暂不生效，spec 决策 10）；
+    /// 非搜索态 = 除「隐藏其他」外全显（现行为不变）。
+    private func sectionVisible(_ section: PanelSection) -> Bool {
+        if model.isSearching {
+            return !model.rows(in: section.kind).isEmpty
+        }
+        return !(section.kind == .other && model.isOtherHidden)
+    }
+
+    /// 搜索态下是否有任一匹配行（全局空态判定用）。
+    private var hasVisibleRows: Bool {
+        ServiceSectionKind.allCases.contains { !model.rows(in: $0).isEmpty }
+    }
+
+    /// 搜索框（spec 决策 6–7、9）：放大镜 + 数字输入 + 清空 ×；Cmd+F 聚焦、
+    /// 聚焦态 Esc 清空退出；未聚焦时 Esc 不接管（onExitCommand 仅聚焦态触发，
+    /// 系统关窗行为不受影响）。
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            TextField("搜端口号", text: $searchText)
+                .textFieldStyle(.plain)
+                .focused($searchFieldFocused)
+                .onChange(of: searchText) { _, newValue in
+                    // 输入层只放行数字（决策 9）：清洗后回写，模型层收规范化事实。
+                    let cleaned = String(newValue.filter { $0.isASCII && $0.isNumber })
+                    if cleaned != newValue { searchText = cleaned }
+                    model.applySearchQuery(cleaned)
+                }
+                .onExitCommand {
+                    if !searchText.isEmpty {
+                        searchText = ""
+                        model.clearSearch()
+                    }
+                    searchFieldFocused = false
+                }
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                    model.clearSearch()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("清空搜索")
+            }
+            // Cmd+F 聚焦（决策 7）：零尺寸隐藏按钮把快捷键注册进窗口。
+            Button("聚焦搜索") { searchFieldFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 
     /// 一个分区：标题行（名称 + 行数）+ 行列表或空状态文案。
@@ -184,7 +266,8 @@ struct PanelView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 16)
             .rowHoverHighlight()
-            if model.isExpanded(row.id) {
+            // 搜索态下聚合行自动展开（spec 决策 5）：children 已被过滤收窄为命中者。
+            if model.isExpanded(row.id) || model.isSearching {
                 ForEach(row.children) { child in
                     serviceRow(child, indented: true)
                 }
