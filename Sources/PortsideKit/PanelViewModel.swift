@@ -236,23 +236,16 @@ public final class PanelViewModel: ObservableObject {
     /// 搜索态与否（渲染层判断「隐藏其他」是否暂不生效等分支用）。
     public var isSearching: Bool { searchPort != nil }
 
-    /// 送入输入框原文，规范化为查询端口：剔除非 ASCII 数字 → 取前 5 位（端口
-    /// 最多 5 位；防粘贴超长整数解析溢出产生「nil = 不过滤」的歧义语义）→ 整数。
-    /// 无数字可取（纯字母/空）= 非搜索态。原文不在模型层留存。
+    /// 送入输入框原文，规范化为查询端口。规则在 PanelSearch.normalizedQueryText
+    /// （视图显示共用同一函数，所见即所查）；空串 = 非搜索态。
     public func applySearchQuery(_ raw: String) {
-        searchPort = Self.normalizedSearchPort(raw)
+        let normalized = PanelSearch.normalizedQueryText(raw)
+        searchPort = normalized.isEmpty ? nil : Int(normalized)
     }
 
     /// 清空搜索（清空按钮 / Esc / 面板隐藏共用）。
     public func clearSearch() {
         searchPort = nil
-    }
-
-    /// 规范化纯函数（可测）。
-    static func normalizedSearchPort(_ raw: String) -> Int? {
-        let digits = raw.filter { $0.isASCII && $0.isNumber }
-        guard !digits.isEmpty else { return nil }
-        return Int(digits.prefix(5))
     }
 
     /// 聚合行是否展开（默认折叠）。

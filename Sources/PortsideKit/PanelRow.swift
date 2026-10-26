@@ -75,6 +75,16 @@ public struct PanelRow: Identifiable, Equatable, Sendable {
             workingDirectory: workingDirectory, pathPrefix: pathPrefix, children: children
         )
     }
+
+    /// 只换展开明细子行的副本（端口搜索收窄用，工单 13）：其余字段一律原样。
+    func withChildren(_ children: [PanelRow]) -> PanelRow {
+        PanelRow(
+            id: id, section: section, isUp: isUp, isManaged: isManaged,
+            definitionID: definitionID, displayName: displayName, typeLabel: typeLabel,
+            ports: ports, uptimeText: uptimeText, commandLine: commandLine, pid: pid,
+            workingDirectory: workingDirectory, pathPrefix: pathPrefix, children: children
+        )
+    }
 }
 
 /// 面板行的构造规则（纯函数）：识别结论 + 运行时长 + 定义上下文 → 各区行。

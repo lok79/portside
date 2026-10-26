@@ -25,6 +25,22 @@ final class PanelSearchTests: XCTestCase {
         )
     }
 
+    // MARK: - 输入规范化（spec 决策 9：视图显示与查询共用，所见即所查）
+
+    func test规范化剔非数字并归一前导零() {
+        XCTAssertEqual(PanelSearch.normalizedQueryText(" :8080 "), "8080")
+        XCTAssertEqual(PanelSearch.normalizedQueryText("abc"), "", "无数字 = 非搜索态")
+        XCTAssertEqual(
+            PanelSearch.normalizedQueryText("0008080"), "8080",
+            "前导零无害（决策 9）——评审轮 1 修复的回归钉"
+        )
+        XCTAssertEqual(PanelSearch.normalizedQueryText("0000000000"), "0", "全零归一为 0")
+        XCTAssertEqual(
+            PanelSearch.normalizedQueryText("12345678"), "12345",
+            "端口 ≤65535：超长粘贴就地截断，杜绝溢出歧义分支"
+        )
+    }
+
     // MARK: - 查询为空 = 非搜索态
 
     func test查询为空原样返回不过滤() {

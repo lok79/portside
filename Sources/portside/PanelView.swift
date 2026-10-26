@@ -172,8 +172,8 @@ struct PanelView: View {
                 .textFieldStyle(.plain)
                 .focused($searchFieldFocused)
                 .onChange(of: searchText) { _, newValue in
-                    // 输入层只放行数字（决策 9）：清洗后回写，模型层收规范化事实。
-                    let cleaned = String(newValue.filter { $0.isASCII && $0.isNumber })
+                    // 输入层只放行数字（决策 9），规则与模型共用（所见即所查）。
+                    let cleaned = PanelSearch.normalizedQueryText(newValue)
                     if cleaned != newValue { searchText = cleaned }
                     model.applySearchQuery(cleaned)
                 }
