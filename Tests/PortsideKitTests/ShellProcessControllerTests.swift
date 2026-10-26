@@ -413,4 +413,17 @@ final class ShellProcessControllerTests: XCTestCase {
         let spawnMessage = ProcessStartError.spawnFailed(8, "exec 格式错误").userMessage
         XCTAssertTrue(spawnMessage.contains("errno=8"), "spawn 失败带 errno：\(spawnMessage)")
     }
+
+    // MARK: - Finder 启动环境加固（工单 12：$SHELL 可能为空）
+
+    func testshell兜底层_macOS上取zsh() {
+        // macOS 恒有 /bin/zsh；缺失才退 /bin/sh（文件系统分支，CI 上恒走 zsh）。
+        XCTAssertEqual(
+            ShellProcessController.defaultShellFallback(), "/bin/zsh",
+            "Finder 拉起时 $SHELL 可能为空：兜底取系统真实存在的 shell"
+        )
+        // 显式注入优先于一切（现状行为钉住）。
+        let controller = makeController()
+        XCTAssertEqual(controller.shellPath, "/bin/sh", "注入值不参与兜底链")
+    }
 }

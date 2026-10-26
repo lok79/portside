@@ -145,7 +145,14 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
         DefinitionStore.defaultDirectory().appendingPathComponent("logs", isDirectory: true)
     }
 
-    private let shellPath: String
+    /// Finder 启动环境的 shell 兜底（工单 12）：Finder 拉起的进程 `$SHELL` 可能为空，
+    /// 此时按 zsh→sh 顺序取系统里真实存在的 shell，不再依赖登录环境。
+    static func defaultShellFallback() -> String {
+        FileManager.default.isExecutableFile(atPath: "/bin/zsh") ? "/bin/zsh" : "/bin/sh"
+    }
+
+    /// 登录 shell 解析结果（internal 供 @testable 断言兜底层，工单 12 Finder 加固）。
+    let shellPath: String
     private let logsDirectory: URL
     private let gracePeriod: Duration
     private let startupWindow: Duration
@@ -159,7 +166,7 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
     private var entries: [String: ProcessEntry] = [:]
 
     /// - Parameters:
-    ///   - shellPath: 登录 shell 路径；nil = `$SHELL`，再退 `/bin/zsh`（注入可测）。
+    ///   - shellPath: 登录 shell 路径；nil = `$SHELL`，再退 `/bin/zsh`→`/bin/sh`（注入可测）。
     ///   - logsDirectory: 落盘日志目录（注入；测试走临时目录）。
     ///   - gracePeriod: SIGTERM 后的宽限期（注入时钟挂起，无忙等）。
     ///   - startupWindow: 启动判定窗；窗内退出 = 启动失败（秒退）。
@@ -179,7 +186,7 @@ public final class ShellProcessController: ProcessController, @unchecked Sendabl
     ) {
         self.shellPath = shellPath
             ?? ProcessInfo.processInfo.environment["SHELL"]
-            ?? "/bin/zsh"
+            ?? Self.defaultShellFallback()
         self.logsDirectory = logsDirectory
         self.gracePeriod = gracePeriod
         self.startupWindow = startupWindow

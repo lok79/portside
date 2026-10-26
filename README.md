@@ -19,25 +19,35 @@ macOS 菜单栏应用：自动发现本机正在运行的开发服务（Java 后
 
 ## 构建与运行
 
-需要 macOS 14+ 和 Swift 6 工具链（Xcode 16+）。零第三方依赖：
+需要 macOS 14+ 和 Swift 6 工具链（Xcode 16+）。零第三方依赖。
+
+**开发**（改代码时）：
 
 ```bash
 cd portside
 swift run portside
 ```
 
-启动即弹出主窗（Dock 出现 Portside 图标、菜单栏出现锚形图标）即启动成功；关掉主窗它仍在菜单栏待命，点 Dock 或菜单栏图标随时调回。测试：
+启动即弹出主窗（Dock 出现 Portside 图标、菜单栏出现帆船图标）即启动成功；关掉主窗它仍在菜单栏待命，点 Dock 或菜单栏图标随时调回。测试：
 
 ```bash
 swift test                                # 全套（200+ 用例）
 PORTSIDE_SMOKE=1 swift test --filter ScannerSmokeTests   # 另加：本机实扫对照真 lsof
 ```
 
+**安装**（日常使用，工单 12）：
+
+```bash
+./scripts/package-app.sh --install
+```
+
+打包成 `Portside.app`（帆船应用图标，Info.plist 完整，ad-hoc 签名）装进「应用程序」（无权限自动回退 `~/Applications`），之后从 Launchpad / Spotlight / Finder 直接打开，不用开终端。图标由 `scripts/render-icon.swift` 渲染生成（产物 `Packaging/AppIcon.icns` 已入库，重生成才需要跑脚本）。
+
 发版前过一遍 [docs/acceptance.md](docs/acceptance.md)（spec 验收 1-10 逐条，机器项 + 人工项）。
 
 ## 当前限制（v1 自用版）
 
-- 未签名、未公证、未打包 .app——`swift run` 裸可执行，自用形态；首次运行 macOS 可能拦一次。
+- 未签名、未公证（仅 ad-hoc 签名）——首次运行 macOS 可能拦一次。
 - 无开机自启。
 - 外部服务的日志是尽力发现：进程的 stdout 在它启动那一刻就流向了别处，Portside 只能找落盘文件；真 PTY（交互 stdin，flutter/expo 场景）不支持。
 - 包装命令的服务定义（如收编 `npm run dev`，实际监听者是 node/vite）在端口兜底停止路径受限：杀前命令校验宁漏杀不误杀，会拒绝停止并明示；Portside 亲生启动/重启不受影响（v1.x 候选：进程树归因兜底）。
