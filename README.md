@@ -83,3 +83,7 @@ PORTSIDE_SMOKE=1 swift test --filter ScannerSmokeTests   # 另加：本机实扫
 - 发版验收清单：[docs/acceptance.md](docs/acceptance.md)
 - 架构决策：[docs/adr/](docs/adr/)（ADR 0001：托管服务与 Portside 生命周期解耦）
 - v1 规格：[../.scratch/portside/v1/spec.md](../.scratch/portside/v1/spec.md)
+
+## 许可
+
+[MIT](LICENSE)。
