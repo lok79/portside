@@ -4,6 +4,8 @@ macOS 菜单栏应用：自动发现本机正在运行的开发服务（Java 后
 
 你每天在终端里 nohup、`npm run dev`、`java -jar`，服务都活在后台——它们没有前台。Portside 给它们一个码头：启动即弹出主窗，所有正在跑的服务谁活着、谁挂了、跑多久了一眼看完；菜单栏锚形图标常驻（有服务挂了变警示三角），随时点回主窗——全程不开终端。
 
+![Portside 32 秒演示](docs/screenshots/portside-demo.gif)
+
 ![主窗 · 列表形态](docs/screenshots/main.png)
 
 ![主窗 · 日志形态](docs/screenshots/logs.png)
