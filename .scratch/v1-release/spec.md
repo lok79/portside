@@ -1,6 +1,6 @@
 # Spec：v1 发布（免签直发）
 
-Status: 进行中（2026-10-26）
+Status: **已发布**（2026-10-27）：仓库已转公开，Release https://github.com/lok79/portside/releases/tag/v1.0.0（Portside-1.0.0.zip，633KB，arm64，ad-hoc 签名）
 产品：portside · 目标版本 1.0.0
 前置：v1 验收通过（仓库主人 2026-10-26 人审确认）；分发路线 D-004（非沙箱 → 无 App Store，直发）+ 用户拍板免签先行（公证 $99/年 暂缓，有下载量再上）
 
@@ -30,7 +30,12 @@ Status: 进行中（2026-10-26）
 
 - [x] README 首开指引就位
 - [x] package-app.sh --zip 产出 .build/Portside-1.0.0.zip
-- [ ] swift test 全套通过
-- [ ] zip 解压验证 .app 结构 + codesign 校验（ad-hoc）
-- [ ] 合回 main + tag v1.0.0
-- [ ] 仓库公开化拍板 → push + Release 发布
+- [x] swift test 全套通过（240 用例，0 失败 1 跳过）
+- [x] zip 解压验证 .app 结构 + codesign 校验（ad-hoc，arm64，版本 1.0.0）
+- [x] 合回 main + tag v1.0.0
+- [x] 仓库公开化拍板（主仓转公开，泄密扫描：无硬编码凭据、无个人邮箱于代码）→ push + Release 发布（2026-10-27）
+
+## 坑位（回灌上架员工手册）
+
+- **构建产物在 worktree 的 .build 里，worktree remove 会连产物一起删**——删 worktree 前先把 zip 拷出去（本次已踩：首发 zip 重打了一遍）。
+- 泄密扫描口径：精确凭据赋值模式（key/secret/password/token = 值）+ 非 md 文件里的个人邮箱；词命中（argv token 等）人工过一眼即可。
